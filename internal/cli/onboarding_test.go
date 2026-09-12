@@ -229,7 +229,9 @@ func TestCurrentLabelsSynthesizedGitIdentityAsUnconfigured(t *testing.T) {
 	runGit(t, repo, "init", "--quiet")
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	configPath := filepath.Join(t.TempDir(), "profiles.json")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

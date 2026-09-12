@@ -38,6 +38,7 @@ func (fake fakeExecutor) Output(args []string) ([]byte, error) {
 func TestDefaultPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	path, err := DefaultPath("personal.one")
 	if err != nil {
 		t.Fatal(err)
@@ -48,6 +49,32 @@ func TestDefaultPath(t *testing.T) {
 	}
 	if _, err := DefaultPath("../unsafe"); err == nil {
 		t.Fatal("DefaultPath accepted an invalid profile name")
+	}
+}
+
+func TestResolvePathExpandsPlatformHomeForms(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "home", path: "~", want: home},
+		{name: "slash", path: "~/keys/id", want: filepath.Join(home, "keys", "id")},
+		{name: "native separator", path: "~" + string(filepath.Separator) + filepath.Join("keys", "id"), want: filepath.Join(home, "keys", "id")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := resolvePath(test.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("resolvePath(%q) = %q, want %q", test.path, got, test.want)
+			}
+		})
 	}
 }
 

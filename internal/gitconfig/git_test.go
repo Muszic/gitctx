@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"gitctx/internal/profile"
 )
@@ -308,7 +309,7 @@ func TestApplyRollbackRestoresExactLocalConfigOrdering(t *testing.T) {
 	if err := os.WriteFile(includePath, []byte("[user]\n\temail = included@example.com\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fixture := append(append([]byte{}, base...), []byte(fmt.Sprintf("\n[user]\n\tname = Before\n\temail = direct@example.com\n[include]\n\tpath = %s\n[user]\n\tsigningKey = original-signing-key\n", includePath))...)
+	fixture := append(append([]byte{}, base...), []byte(fmt.Sprintf("\n[user]\n\tname = Before\n\temail = direct@example.com\n[include]\n\tpath = %q\n[user]\n\tsigningKey = original-signing-key\n", includePath))...)
 	if err := os.WriteFile(configPath, fixture, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -615,10 +616,16 @@ func TestSSHRouteIssueRejectsHostAliasAndAcceptsCanonicalHost(t *testing.T) {
 	}
 }
 
-func TestApplyTargetsRepositoryWhosePathEndsInSpace(t *testing.T) {
+func TestApplyTargetsRepositoryWhosePathEndsInWhitespace(t *testing.T) {
 	parent := t.TempDir()
 	plainRepo := filepath.Join(parent, "repo")
-	spaceRepo := filepath.Join(parent, "repo ")
+	trailingWhitespace := " "
+	if runtime.GOOS == "windows" {
+		// Win32 normalizes a trailing ASCII space away. A non-breaking space is
+		// still whitespace to strings.TrimSpace but names a distinct directory.
+		trailingWhitespace = "\u00a0"
+	}
+	spaceRepo := filepath.Join(parent, "repo"+trailingWhitespace)
 	for _, repo := range []string{plainRepo, spaceRepo} {
 		command := exec.Command("git", "init", "--quiet", repo)
 		command.Env = isolatedGitEnvironment()
@@ -638,11 +645,15 @@ func TestApplyTargetsRepositoryWhosePathEndsInSpace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonicalSpaceRepo, err := filepath.EvalSymlinks(spaceRepo)
+	expectedInfo, err := os.Stat(spaceRepo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spaceState.Repository != canonicalSpaceRepo || spaceState.Profile != "personal" {
+	resolvedInfo, err := os.Stat(spaceState.Repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(expectedInfo, resolvedInfo) || spaceState.Profile != "personal" {
 		t.Fatalf("space repository state = %#v", spaceState)
 	}
 	if plainState.Profile != "" {
@@ -725,7 +736,7 @@ func TestConcurrentApplyLeavesOneCompleteProfile(t *testing.T) {
 		go func(name string) {
 			defer group.Done()
 			<-start
-			if err := client.Apply(repo, name, profiles[name]); err != nil {
+			if err := client.apply(repo, name, profiles[name], time.Minute); err != nil {
 				errorsFound <- err
 			}
 		}(name)
@@ -749,6 +760,32 @@ func TestConcurrentApplyLeavesOneCompleteProfile(t *testing.T) {
 		state.GitName != selected.GitName || state.GitEmail != selected.GitEmail ||
 		state.CommitterName != selected.GitName || state.CommitterEmail != selected.GitEmail {
 		t.Fatalf("final state mixes profiles: %#v", state)
+	}
+}
+
+func TestResolvePathExpandsPlatformHomeForms(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "home", path: "~", want: home},
+		{name: "slash", path: "~/keys/id", want: filepath.Join(home, "keys", "id")},
+		{name: "native separator", path: "~" + string(filepath.Separator) + filepath.Join("keys", "id"), want: filepath.Join(home, "keys", "id")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := ResolvePath(test.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("ResolvePath(%q) = %q, want %q", test.path, got, test.want)
+			}
+		})
 	}
 }
 

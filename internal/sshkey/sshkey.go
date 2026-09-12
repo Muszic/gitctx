@@ -413,7 +413,7 @@ func resolvePath(path string) (string, error) {
 	if strings.IndexFunc(path, unicode.IsControl) >= 0 {
 		return "", fmt.Errorf("SSH private-key path cannot contain control characters")
 	}
-	if path == "~" || strings.HasPrefix(path, "~/") {
+	if isHomeRelativePath(path) {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("find home directory: %w", err)
@@ -421,7 +421,7 @@ func resolvePath(path string) (string, error) {
 		if path == "~" {
 			path = home
 		} else {
-			path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
+			path = filepath.Join(home, path[2:])
 		}
 	}
 	abs, err := filepath.Abs(path)
@@ -429,6 +429,10 @@ func resolvePath(path string) (string, error) {
 		return "", fmt.Errorf("resolve SSH private-key path: %w", err)
 	}
 	return filepath.Clean(abs), nil
+}
+
+func isHomeRelativePath(path string) bool {
+	return path == "~" || (len(path) >= 2 && path[0] == '~' && os.IsPathSeparator(path[1]))
 }
 
 func requireMissing(path, label string) error {

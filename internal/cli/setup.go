@@ -1030,7 +1030,7 @@ func inheritedKeyMatches(inherited string, pair sshkey.Pair, repository string) 
 	if inherited == "" {
 		return false
 	}
-	if !strings.HasPrefix(inherited, "key::") && inherited != "~" && !strings.HasPrefix(inherited, "~/") && !filepath.IsAbs(inherited) {
+	if !strings.HasPrefix(inherited, "key::") && !gitconfig.IsHomeRelativePath(inherited) && !filepath.IsAbs(inherited) {
 		inherited = filepath.Join(repository, inherited)
 	}
 	for _, candidate := range []string{pair.PrivatePath, pair.PublicPath} {

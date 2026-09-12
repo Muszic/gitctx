@@ -337,7 +337,11 @@ func sshOverrideLabel(name, value string) string {
 // Apply writes a profile to repository-local Git config. It builds a complete
 // candidate file first and, on supported Unix targets, swaps it atomically into
 // place only if the original config did not change concurrently.
-func (c *Client) Apply(path, profileName string, selected profile.Profile) (err error) {
+func (c *Client) Apply(path, profileName string, selected profile.Profile) error {
+	return c.apply(path, profileName, selected, 10*time.Second)
+}
+
+func (c *Client) apply(path, profileName string, selected profile.Profile, lockTimeout time.Duration) (err error) {
 	if err := profile.ValidateName(profileName); err != nil {
 		return err
 	}
@@ -353,7 +357,7 @@ func (c *Client) Apply(path, profileName string, selected profile.Profile) (err 
 	if err != nil {
 		return err
 	}
-	lock, err := filelock.Acquire(filepath.Join(commonDir, "gitctx.lock"), 10*time.Second)
+	lock, err := filelock.Acquire(filepath.Join(commonDir, "gitctx.lock"), lockTimeout)
 	if err != nil {
 		return fmt.Errorf("lock repository Git config: %w", err)
 	}
@@ -615,9 +619,9 @@ func slicesContainString(values []string, target string) bool {
 	return false
 }
 
-// ResolvePath expands a leading ~/ and returns an absolute path.
+// ResolvePath expands a leading home-relative tilde and returns an absolute path.
 func ResolvePath(path string) (string, error) {
-	if path == "~" || strings.HasPrefix(path, "~/") {
+	if IsHomeRelativePath(path) {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("resolve home directory: %w", err)
@@ -625,10 +629,16 @@ func ResolvePath(path string) (string, error) {
 		if path == "~" {
 			path = home
 		} else {
-			path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
+			path = filepath.Join(home, path[2:])
 		}
 	}
 	return filepath.Abs(path)
+}
+
+// IsHomeRelativePath reports whether path starts with a standalone tilde or a
+// tilde followed by a path separator recognized on this platform.
+func IsHomeRelativePath(path string) bool {
+	return path == "~" || (len(path) >= 2 && path[0] == '~' && os.IsPathSeparator(path[1]))
 }
 
 // ExpectedSSHCommand returns the exact repository-local command used for a key.

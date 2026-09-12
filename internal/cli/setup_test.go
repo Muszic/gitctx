@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"gitctx/internal/configstore"
+	"gitctx/internal/sshkey"
 )
 
 func TestSetupIdentityOnlyDisablesSigningWithoutChangingGlobalConfig(t *testing.T) {
@@ -852,6 +853,7 @@ func setupTestGlobalConfig(t *testing.T, dir string) string {
 	home := t.TempDir()
 	globalPath := filepath.Join(home, "global.gitconfig")
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("GIT_CONFIG_GLOBAL", globalPath)
 	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
@@ -861,6 +863,18 @@ func setupTestGlobalConfig(t *testing.T, dir string) string {
 	runGit(t, dir, "config", "--global", "user.signingKey", filepath.Join(home, ".ssh", "work.pub"))
 	runGit(t, dir, "config", "--global", "commit.gpgSign", "true")
 	return globalPath
+}
+
+func TestInheritedKeyMatchesPlatformHomeRelativePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	privatePath := filepath.Join(home, ".ssh", "personal-key")
+	pair := sshkey.Pair{PrivatePath: privatePath, PublicPath: privatePath + ".pub"}
+	inherited := "~" + string(filepath.Separator) + filepath.Join(".ssh", "personal-key.pub")
+	if !inheritedKeyMatches(inherited, pair, t.TempDir()) {
+		t.Fatalf("inheritedKeyMatches(%q) = false, want true", inherited)
+	}
 }
 
 func setupTestGenerateSSHKey(t *testing.T, path string) {
