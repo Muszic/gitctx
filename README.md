@@ -63,7 +63,9 @@ From inside the repository you want to configure, start the guided setup:
 gitctx setup personal
 ```
 
-The setup flow collects the commit name and email, optional GitHub username metadata, authentication mode, and signing policy. It previews the plan before changing anything, then saves the profile and applies it to the target repository. Use `--repo <path>` to configure a different repository. When an existing profile is also used by automatic directory rules, the preview lists those directories and setup synchronizes their identity snapshots too.
+The setup flow explains three pieces in plain language: the identity recorded in commits, the SSH key used for pushes, and the key used to sign commits. It detects the repository's default remote and transport, validates identity fields and an existing key before previewing the plan, then applies the repository settings. SSH authentication and signing stay limited to the target repository. If that profile already has automatic identity rules, setup discloses and synchronizes their name/email snapshots after confirmation. Global work identity and signing defaults stay unchanged. The profile itself is saved in gitctx's user configuration. Key generation happens in a protected temporary directory; after validation, the finished key pair is moved to the destination shown in the preview. In an interactive terminal, `gitctx setup` without a profile name suggests `personal`. Use `--repo <path>` to configure a different repository.
+
+When a saved profile already exists, setup offers to apply it unchanged, edit and apply it, or cancel. When an edited profile is also used by automatic directory rules, the preview lists those directories and setup synchronizes their identity snapshots too.
 
 Authentication has three choices:
 
@@ -75,7 +77,9 @@ With generated or existing SSH authentication, setup also requires an explicit s
 
 To avoid accidental cross-account key reuse, setup refuses an authentication key that matches the inherited signing key unless you intentionally pass `--allow-key-reuse`; that override is reported as a warning.
 
-For either SSH option, setup prints the public-key path and fingerprint. Register that public key manually with the intended Git hosting account, or confirm it is already registered, as an authentication key and, when using `same-key`, as a signing key too. gitctx does not upload or register the key and does not test account connectivity. If a default push destination is configured, the SSH options require it to resolve exclusively to SSH URLs; gitctx does not rewrite the remote.
+For either SSH option, setup prints the public-key path, fingerprint, a platform-appropriate copy command, and account-registration links for the detected hosts. Register that public key manually with every intended Git hosting account. GitHub requires one Authentication Key entry and, when using `same-key`, a second Signing Key entry for the same public key. Other hosts may use a different signing-registration model. gitctx never uploads the key or opens a browser automatically.
+
+If a default push destination is configured, the SSH options require every push URL to use SSH. An HTTPS remote is identified before key questions; setup shows the exact SSH conversion command only when it can derive the same known-provider repository URL safely. gitctx never rewrites the remote itself.
 
 After setup, inspect the selected context and its local verification results:
 
@@ -83,6 +87,14 @@ After setup, inspect the selected context and its local verification results:
 gitctx current
 gitctx doctor
 ```
+
+`doctor` is intentionally offline. After registering the public key and configuring an SSH remote, run the opt-in live check:
+
+```sh
+gitctx verify
+```
+
+`verify` first requires the local profile checks to be safe, then runs a bounded, non-interactive, read-only `git ls-remote` against every effective SSH push URL using only the repository-managed key. It preserves strict host-key verification and will not add or update `known_hosts`; a host must already be trusted. A passphrase-protected key must be available through `ssh-agent`. Success proves that the key can read the configured remotes at that moment. It does not push, prove write permission, or prove which hosting account owns the key.
 
 To reuse the saved profile in another repository, run `gitctx use personal` there. To select only its commit identity automatically for conventional repositories below a directory, use `gitctx auto add <directory> personal` as described below.
 
@@ -134,6 +146,7 @@ gitctx list [--json]
 gitctx use <profile> [--repo <path>] [--json]
 gitctx current [--repo <path>] [--json]
 gitctx doctor [--repo <path>] [--strict] [--json]
+gitctx verify [--repo <path>] [--json]
 gitctx fix [--repo <path>] [--json]
 gitctx auto add <directory> <profile> [--force] [--json]
 gitctx auto list [--json]
@@ -152,7 +165,7 @@ gitctx doctor --json
 
 `setup --json` is fully non-interactive and requires `--name`, `--email`, `--auth`, and `--signing` (plus `--ssh-key` for `--auth existing`). It refuses `--auth generate` because `ssh-keygen` needs an interactive passphrase prompt. Create the key pair outside JSON mode, then select it with `--auth existing --ssh-key <private-key-path>`; add `--force` when replacing an existing profile.
 
-JSON responses use a versioned envelope with `command`, `ok`, and either `data` or `error`. `ok: true` means the command completed and returned structured data; it does not by itself mean the reported repository state is healthy. `setup`, `doctor`, `use`, and `fix` can therefore return `ok: true` data while exiting with status `1` for an unsafe result. Warnings exit successfully unless `doctor --strict` is used. Invalid usage exits `2`; missing profiles, rules, and profile-state conflicts exit `3`; Git failures exit `4`; and configuration failures exit `5`.
+JSON responses use a versioned envelope with `command`, `ok`, and either `data` or `error`. `ok: true` means the command completed and returned structured data; it does not by itself mean the reported repository state is healthy. `setup`, `doctor`, `verify`, `use`, and `fix` can therefore return `ok: true` data while exiting with status `1` for an unsafe or not-ready result. A successful `verify` has `data.status` set to `ready`; a completed failed check uses `not_ready` plus a structured `reason`. Warnings exit successfully unless `doctor --strict` is used. Invalid usage exits `2`; missing profiles, rules, and profile-state conflicts exit `3`; Git failures exit `4`; and configuration failures exit `5`.
 
 ## Profile storage
 
@@ -169,7 +182,7 @@ The config file lives in the operating system's user config directory under `git
 
 ## Scope and safety
 
-Version 0.1 supports repository isolation through local Git configuration and SSH. Its supported targets are macOS and Linux, and it requires Git 2.30 or newer plus `ssh-keygen` when SSH profiles are used. Windows builds are experimental because Windows ACL protection and atomic file-replacement behavior are not yet verified. For strict key isolation, an applied SSH profile ignores user and system SSH config; use a fully qualified host in the Git remote rather than an SSH `Host` alias, and note that custom proxy, port, and host settings are not inherited or connectivity-tested. Unix file modes are checked for private-key exposure. Literal `${` is rejected in SSH-key paths because OpenSSH may treat it as environment-variable syntax. It does not perform browser login, manage credentials, rewrite remotes, or switch the machine-wide active `gh` account. It verifies a resolvable named default push remote; direct URL selectors are reported as unverifiable, and an explicitly supplied destination such as `git push other-remote` is outside that check. The optional `auto` feature changes global Git config only through its generated include and short-lived staging section; unrelated includes and global identity values are preserved.
+Version 0.1 supports repository isolation through local Git configuration and SSH. Its supported targets are macOS and Linux, and it requires Git 2.30 or newer plus `ssh-keygen` when SSH profiles are used. Windows builds are experimental because Windows ACL protection and atomic file-replacement behavior are not yet verified. For strict key isolation, an applied SSH profile ignores user and system SSH config; use a fully qualified host in the Git remote rather than an SSH `Host` alias, and note that custom proxy and port settings are not inherited. Unix file modes are checked for private-key exposure. Literal `${` is rejected in SSH-key paths because OpenSSH may treat it as environment-variable syntax. It does not perform browser login, manage credentials, rewrite remotes, or switch the machine-wide active `gh` account. Offline checks validate a resolvable named default push remote; `verify` is the explicit live connectivity check. Direct URL selectors are reported as unverifiable, and an explicitly supplied destination such as `git push other-remote` is outside that check. The optional `auto` feature changes global Git config only through its generated include and short-lived staging section; unrelated includes and global identity values are preserved.
 
 gitctx trusts the `git`, `ssh`, and initial `ssh-keygen` executables resolved from the environment in which it runs, just as Git and OpenSSH normally do. Run setup and profile application from a trusted shell with a trusted `PATH`. The signing-program integrity marker detects replacement after gitctx selects the executable; it cannot prove that an executable was benign before that initial selection.
 
@@ -179,7 +192,7 @@ Only one profile store's automatic rules may be active at a time. Disable the fi
 
 The MVP uses small lock files while changing its profile store or repository settings. If a process is force-quit or interrupted during a mutation, a later command may time out and print the exact leftover lock path. After confirming that no `gitctx` process is running, remove only that reported lock file and retry.
 
-Guided GitHub login, remote rewriting, hooks, and the VS Code extension are later milestones. The versioned JSON output is the intended integration surface for that extension.
+Guided browser login, automatic key upload, remote rewriting, hooks, and the VS Code extension are later milestones. The versioned JSON output is the intended integration surface for that extension.
 
 ## Build release artifacts
 

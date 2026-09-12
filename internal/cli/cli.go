@@ -126,7 +126,7 @@ func doesNotNeedConfig(args []string) bool {
 	switch args[0] {
 	case "help", "-h", "--help", "version", "-v", "--version":
 		return true
-	case "setup", "add", "list", "profiles", "use", "current", "status", "doctor", "fix", "auto":
+	case "setup", "add", "list", "profiles", "use", "current", "status", "doctor", "verify", "fix", "auto":
 		// These commands may need the profile store unless effective help is true.
 	default:
 		// Unknown commands can report usage without resolving user configuration.
@@ -201,6 +201,12 @@ func (a application) run(args []string) int {
 	a.command = args[0]
 	switch args[0] {
 	case "help", "-h", "--help":
+		if len(args) == 2 && args[1] != "help" && args[1] != "-h" && args[1] != "--help" {
+			return a.run([]string{args[1], "--help"})
+		}
+		if len(args) > 2 {
+			return a.fail(exitUsage, "invalid_usage", errors.New("help accepts at most one command name"), "Usage: gitctx help [command]")
+		}
 		printHelp(a.out)
 		return exitOK
 	case "version", "-v", "--version":
@@ -220,6 +226,8 @@ func (a application) run(args []string) int {
 		return a.current(args[1:])
 	case "doctor":
 		return a.doctor(args[1:])
+	case "verify":
+		return a.verify(args[1:])
 	case "fix":
 		return a.fix(args[1:])
 	case "auto":
@@ -399,7 +407,8 @@ func (a application) list(args []string) int {
 		}{profiles, a.store.Path}, nil)
 	}
 	if len(profiles) == 0 {
-		fmt.Fprintln(a.out, "No profiles yet. Create one with: gitctx add <profile>")
+		fmt.Fprintln(a.out, "No profiles yet. Start the guided setup inside a repository:")
+		fmt.Fprintln(a.out, "  gitctx setup personal")
 		return exitOK
 	}
 
@@ -516,7 +525,7 @@ func (a application) current(args []string) int {
 	}
 	state, err := a.git.Inspect(options.repo)
 	if err != nil {
-		return a.fail(exitGit, "not_git_repository", err, "")
+		return a.fail(exitGit, "not_git_repository", friendlyRepositoryError(err), "Change into a Git repository, or pass --repo <path>.")
 	}
 	state = classifyProfileSource(state, config, a.store.Path)
 	current := buildCurrent(state, config)
@@ -537,7 +546,11 @@ func (a application) current(args []string) int {
 	} else {
 		fmt.Fprintf(a.out, "Profile      %s\n", escapeDisplayControls(current.Profile))
 	}
-	fmt.Fprintf(a.out, "Git author   %s <%s>\n", escapeDisplayControls(valueOrDash(current.GitName)), escapeDisplayControls(valueOrDash(current.GitEmail)))
+	if current.IdentityConfigured {
+		fmt.Fprintf(a.out, "Git author   %s <%s>\n", escapeDisplayControls(valueOrDash(current.GitName)), escapeDisplayControls(valueOrDash(current.GitEmail)))
+	} else {
+		fmt.Fprintln(a.out, "Git author   not explicitly configured (Git may synthesize a machine-based fallback)")
+	}
 	if current.CommitterEmail != "" && (current.CommitterName != current.GitName || current.CommitterEmail != current.GitEmail) {
 		fmt.Fprintf(a.out, "Committer    %s <%s>\n", escapeDisplayControls(current.CommitterName), escapeDisplayControls(current.CommitterEmail))
 	}
@@ -596,7 +609,7 @@ func (a application) doctor(args []string) int {
 	}
 	state, err := a.git.Inspect(options.repo)
 	if err != nil {
-		return a.fail(exitGit, "not_git_repository", err, "")
+		return a.fail(exitGit, "not_git_repository", friendlyRepositoryError(err), "Change into a Git repository, or pass --repo <path>.")
 	}
 	state = classifyProfileSource(state, config, a.store.Path)
 	diagnosis := diagnose(state, config)
@@ -1109,6 +1122,7 @@ type currentOutput struct {
 	ProfileOrigin               string   `json:"profile_origin,omitempty"`
 	GitName                     string   `json:"git_name,omitempty"`
 	GitEmail                    string   `json:"git_email,omitempty"`
+	IdentityConfigured          bool     `json:"identity_configured"`
 	CommitterName               string   `json:"committer_name,omitempty"`
 	CommitterEmail              string   `json:"committer_email,omitempty"`
 	GitHubUser                  string   `json:"github_user,omitempty"`
@@ -1149,6 +1163,7 @@ func buildCurrent(state gitconfig.State, config configstore.Config) currentOutpu
 		ProfileOrigin:               state.ProfileOrigin,
 		GitName:                     state.GitName,
 		GitEmail:                    state.GitEmail,
+		IdentityConfigured:          state.ConfigName != "" && state.ConfigEmail != "",
 		CommitterName:               state.CommitterName,
 		CommitterEmail:              state.CommitterEmail,
 		SigningKey:                  state.SigningKey,
@@ -1916,7 +1931,7 @@ func optionConsumesValue(command, name string) bool {
 		case "--name", "--git-name", "--email", "--git-email", "--github", "--github-user", "--ssh-key", "--signing-key", "--signing-format":
 			return true
 		}
-	case "use", "current", "doctor", "fix":
+	case "use", "current", "doctor", "verify", "fix":
 		return name == "--repo"
 	}
 	return false
@@ -1968,6 +1983,14 @@ func (a application) fail(exitCode int, code string, err error, hint string) int
 	return exitCode
 }
 
+func friendlyRepositoryError(err error) error {
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "not a git repository") || strings.Contains(message, "must be run in a work tree") || strings.Contains(message, "not a working tree") {
+		return errors.New("the selected path is not inside a Git repository")
+	}
+	return err
+}
+
 func (a application) writeEnvelope(value envelope) int {
 	encoder := json.NewEncoder(a.out)
 	encoder.SetEscapeHTML(false)
@@ -1980,6 +2003,9 @@ func (a application) writeEnvelope(value envelope) int {
 
 func currentWarnings(current currentOutput) []notice {
 	var warnings []notice
+	if !current.IdentityConfigured {
+		warnings = append(warnings, notice{Code: "identity_unconfigured", Message: "Git name or email is not explicitly configured; Git may synthesize a machine-based identity. Run 'gitctx setup personal' before committing."})
+	}
 	if current.ProfileSource == "local" && current.MultipleWorktrees {
 		warnings = append(warnings, notice{Code: "multiple_worktrees_unsafe", Message: "This repository-local profile is shared by multiple linked worktrees; remove extra worktrees or manage worktree-specific Git config manually before relying on the identity."})
 	}
@@ -2070,12 +2096,13 @@ Usage:
   gitctx <command> [options]
 
 Commands:
-  setup <profile>  Guided identity, SSH authentication, and signing setup
+  setup <profile>  Guided first-time setup for one repository
   add <profile>    Create a profile with non-secret identity metadata
   list             List saved profiles
   use <profile>    Apply a profile to one repository
   current          Show the effective repository identity (alias: status)
   doctor           Check identity and authentication configuration
+  verify           Test the profile key against the push remote (read-only)
   fix              Re-apply the repository's selected profile
   auto              Manage automatic directory-to-profile rules
   version           Show the current version

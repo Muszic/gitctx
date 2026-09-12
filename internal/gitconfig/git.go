@@ -4,6 +4,7 @@ package gitconfig
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -49,7 +50,8 @@ var (
 
 // Client executes the system Git command with a controllable environment.
 type Client struct {
-	Env []string
+	Env                       []string
+	remoteVerificationTimeout time.Duration
 }
 
 // State is the effective Git state for a working repository. GitName and
@@ -731,6 +733,177 @@ func IsSSHRemote(remote string) bool {
 	return ok
 }
 
+// SSHRemoteHost returns the network host selected by an SSH Git remote. The
+// boolean is false when remote is not a supported SSH URL.
+func SSHRemoteHost(remote string) (string, bool) {
+	destination, ok := parseSSHDestination(remote)
+	if !ok {
+		return "", false
+	}
+	return destination.host, true
+}
+
+// VerifyRemoteAccess performs a read-only Git handshake with one SSH remote.
+// It reuses the repository's already-validated SSH command, while disabling
+// interactive password/passphrase prompts so this command fails with a useful
+// result instead of hanging. No refs or repository contents are changed.
+func (c *Client) VerifyRemoteAccess(_ string, remote, sshCommand string) error {
+	if !IsSSHRemote(remote) {
+		return errors.New("remote is not a supported SSH URL")
+	}
+	if strings.TrimSpace(sshCommand) == "" {
+		return errors.New("repository has no managed SSH command")
+	}
+
+	timeout := c.remoteVerificationTimeout
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	probeCommand := sshCommand + " -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o UpdateHostKeys=no"
+	probeDirectory, err := os.MkdirTemp("", "gitctx-verify-")
+	if err != nil {
+		return fmt.Errorf("create isolated verification directory: %w", err)
+	}
+	createdProbeDirectory := probeDirectory
+	defer os.Remove(createdProbeDirectory) // The probe does not create files here.
+	probeDirectory, err = filepath.Abs(probeDirectory)
+	if err != nil {
+		return fmt.Errorf("resolve isolated verification directory: %w", err)
+	}
+	probeDirectory, err = filepath.EvalSymlinks(probeDirectory)
+	if err != nil {
+		return fmt.Errorf("resolve physical verification directory: %w", err)
+	}
+
+	// Request only HEAD. Enumerating every advertised ref would provide no
+	// additional access guarantee and would allow an untrusted remote to make
+	// this small connectivity check consume unbounded output.
+	command := exec.CommandContext(ctx, "git",
+		"-c", "core.sshCommand="+probeCommand,
+		"-c", "ssh.variant=ssh",
+		"ls-remote", "--quiet", "--", remote, "HEAD",
+	)
+	// Inspect has already resolved Git's push URL rewrites. Run from a fresh
+	// directory with all other Git configuration disabled so passing that URL
+	// back to Git cannot apply a second url.*.insteadOf rewrite and reach a
+	// different host than an actual push.
+	command.Dir = probeDirectory
+	command.WaitDelay = 2 * time.Second
+	configureProbeProcessGroup(command)
+	environment := c.Env
+	if environment == nil {
+		environment = os.Environ()
+	}
+	environment = sanitizedVerificationEnvironment(environment)
+	environment = withEnvironmentValue(environment, "GIT_TERMINAL_PROMPT", "0")
+	environment = withEnvironmentValue(environment, "GIT_CONFIG_NOSYSTEM", "1")
+	environment = withEnvironmentValue(environment, "GIT_CONFIG_GLOBAL", os.DevNull)
+	// GIT_DIR prevents repository discovery even if TMPDIR is inside another
+	// worktree. ls-remote with an explicit URL does not require a repository.
+	environment = withEnvironmentValue(environment, "GIT_DIR", os.DevNull)
+	environment = withEnvironmentValue(environment, "GIT_CEILING_DIRECTORIES", filepath.Dir(probeDirectory))
+	command.Env = environment
+	var stderr boundedOutput
+	command.Stdout = io.Discard
+	command.Stderr = &stderr
+	err = command.Run()
+	if err == nil {
+		return nil
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return errors.New("connection timed out")
+	}
+	detail := strings.TrimSpace(stderr.String())
+	if detail == "" {
+		detail = err.Error()
+	}
+	if stderr.Truncated() {
+		detail += " [output truncated]"
+	}
+	return fmt.Errorf("remote access failed: %s", detail)
+}
+
+const verificationOutputLimit = 64 * 1024
+
+type boundedOutput struct {
+	buffer    bytes.Buffer
+	truncated bool
+}
+
+func (w *boundedOutput) Write(value []byte) (int, error) {
+	originalLength := len(value)
+	remaining := verificationOutputLimit - w.buffer.Len()
+	if remaining > 0 {
+		if len(value) > remaining {
+			value = value[:remaining]
+			w.truncated = true
+		}
+		_, _ = w.buffer.Write(value)
+	} else if len(value) > 0 {
+		w.truncated = true
+	}
+	// Report the original length so os/exec can continue draining the pipe
+	// while excess remote-controlled output is discarded.
+	return originalLength, nil
+}
+
+func (w *boundedOutput) String() string { return w.buffer.String() }
+
+func (w *boundedOutput) Truncated() bool { return w.truncated }
+
+func sanitizedVerificationEnvironment(environment []string) []string {
+	base := sanitizedGitEnvironment(environment)
+	result := make([]string, 0, len(base))
+	for _, entry := range base {
+		key, _, found := strings.Cut(entry, "=")
+		if !found {
+			result = append(result, entry)
+			continue
+		}
+		switch {
+		case strings.EqualFold(key, "GIT_SSH_COMMAND"):
+			continue
+		case strings.EqualFold(key, "GIT_SSH"):
+			continue
+		case strings.EqualFold(key, "GIT_SSH_VARIANT"):
+			continue
+		case strings.EqualFold(key, "GIT_CONFIG_PARAMETERS"):
+			continue
+		case strings.EqualFold(key, "GIT_CONFIG_COUNT"):
+			continue
+		case strings.HasPrefix(strings.ToUpper(key), "GIT_CONFIG_KEY_"):
+			continue
+		case strings.HasPrefix(strings.ToUpper(key), "GIT_CONFIG_VALUE_"):
+			continue
+		case strings.EqualFold(key, "GIT_CONFIG_GLOBAL"):
+			continue
+		case strings.EqualFold(key, "GIT_CONFIG_SYSTEM"):
+			continue
+		case strings.EqualFold(key, "GIT_CONFIG_NOSYSTEM"):
+			continue
+		case strings.EqualFold(key, "GIT_CEILING_DIRECTORIES"):
+			continue
+		default:
+			result = append(result, entry)
+		}
+	}
+	return result
+}
+
+func withEnvironmentValue(environment []string, key, value string) []string {
+	result := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		name, _, found := strings.Cut(entry, "=")
+		if found && strings.EqualFold(name, key) {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return append(result, key+"="+value)
+}
+
 type sshDestination struct {
 	host string
 	user string
@@ -780,15 +953,21 @@ func parseSSHDestination(remote string) (sshDestination, bool) {
 }
 
 func (c *Client) sshRouteIssue(remotes []string) string {
+	firstHost := ""
 	for _, remote := range remotes {
 		destination, ok := parseSSHDestination(remote)
 		if !ok {
 			continue
 		}
+		if firstHost == "" {
+			firstHost = destination.host
+		}
 		if net.ParseIP(destination.host) == nil && !strings.Contains(destination.host, ".") && !strings.EqualFold(destination.host, "localhost") {
 			return fmt.Sprintf("SSH remote host %q may be a Host alias, but strict key isolation disables SSH config; use an IP address or fully qualified hostname", destination.host)
 		}
-		return fmt.Sprintf("strict key isolation disables SSH config; routing and connectivity to host %q are not tested", destination.host)
+	}
+	if firstHost != "" {
+		return fmt.Sprintf("strict key isolation disables SSH config; routing and connectivity to host %q are not tested", firstHost)
 	}
 	return ""
 }

@@ -609,6 +609,10 @@ func TestSSHRouteIssueRejectsHostAliasAndAcceptsCanonicalHost(t *testing.T) {
 	if !strings.Contains(issue, "not tested") {
 		t.Fatalf("sshRouteIssue(canonical host) = %q, want unverified-routing warning", issue)
 	}
+	issue = client.sshRouteIssue([]string{"git@github.com:owner/repo.git", "git@personal-alias:owner/backup.git"})
+	if issue == "" || !strings.Contains(issue, "personal-alias") || !strings.Contains(issue, "Host alias") {
+		t.Fatalf("sshRouteIssue(later alias) = %q, want specific Host-alias warning", issue)
+	}
 }
 
 func TestApplyTargetsRepositoryWhosePathEndsInSpace(t *testing.T) {

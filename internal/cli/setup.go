@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -46,6 +48,7 @@ type setupOutput struct {
 }
 
 func (a application) setup(args []string) int {
+	editRequested := setupEditRequested(args)
 	options, err := parseSetup(args)
 	if err != nil {
 		return a.fail(exitUsage, "invalid_usage", err, "Run 'gitctx setup --help' for usage.")
@@ -55,7 +58,14 @@ func (a application) setup(args []string) int {
 		return exitOK
 	}
 	if options.profile == "" {
-		return a.fail(exitUsage, "invalid_usage", errors.New("setup requires a profile name"), "Usage: gitctx setup <profile> [options]")
+		if !options.json && isTerminalInput(a.rawIn) {
+			options.profile, err = a.promptSetupValue("Profile name", "personal", true)
+			if err != nil {
+				return a.fail(exitUsage, "setup_cancelled", err, "Nothing was changed.")
+			}
+		} else {
+			return a.fail(exitUsage, "invalid_usage", errors.New("setup requires a profile name"), "Example: gitctx setup personal")
+		}
 	}
 	if err := profile.ValidateName(options.profile); err != nil {
 		return a.fail(exitUsage, "invalid_profile", err, "")
@@ -79,7 +89,7 @@ func (a application) setup(args []string) int {
 	// isolate before asking questions or generating any key material.
 	preflight, err := a.git.Inspect(options.repo)
 	if err != nil {
-		return a.fail(exitGit, "not_git_repository", err, "Run setup from inside the repository, or pass --repo <path>.")
+		return a.fail(exitGit, "not_git_repository", friendlyRepositoryError(err), "Change into a Git repository, or run: gitctx setup personal --repo <path>")
 	}
 	if preflight.MultipleWorktrees {
 		return a.fail(exitGit, "multiple_worktrees_unsafe", errors.New("repository has multiple linked worktrees; setup will not change their shared local identity"), "Remove the linked worktrees or manage worktree-specific Git config manually.")
@@ -106,37 +116,59 @@ func (a application) setup(args []string) int {
 		if beforeProfile.SSHKey != "" {
 			fmt.Fprintf(a.out, "  SSH key     %s\n", escapeDisplayControls(beforeProfile.SSHKey))
 		}
-		confirmed, promptErr := a.promptConfirmation("Update this profile and apply it to the repository")
+		defaultAction := "apply"
+		if editRequested {
+			defaultAction = "edit"
+		}
+		action, promptErr := a.promptSetupChoice("What would you like to do", []setupChoice{
+			{Value: "apply", Label: "Apply this saved profile without changing it (recommended)"},
+			{Value: "edit", Label: "Edit the profile, then apply it"},
+			{Value: "cancel", Label: "Cancel"},
+		}, defaultAction)
 		if promptErr != nil {
 			return a.fail(exitUsage, "setup_cancelled", promptErr, "No profile, key, or Git setting was changed.")
 		}
-		if !confirmed {
+		if action == "cancel" {
 			fmt.Fprintln(a.out, "Setup cancelled. Nothing was changed.")
 			return exitOK
+		}
+		if action == "apply" {
+			if beforeProfile.SSHKey != "" {
+				if code, remoteErr, hint := setupSSHRemoteError(preflight); remoteErr != nil {
+					return a.fail(exitGit, code, remoteErr, hint)
+				}
+			}
+			return a.use([]string{options.profile, "--repo", repository})
 		}
 		options.force = true
 		interactive = true
 	}
 
 	if !options.json {
+		if interactive {
+			printSetupIntroduction(a.out, options.profile, repository, preflight.EffectivePushURLs(), baselineAffectedRules)
+		}
 		if options.gitName == "" {
-			options.gitName, err = a.promptSetupValue("Git name", beforeProfile.GitName, true)
+			options.gitName, err = a.promptValidatedSetupValue("Commit author name", beforeProfile.GitName, true, validateSetupGitName)
 			if err != nil {
 				return a.fail(exitUsage, "setup_cancelled", err, "Nothing was changed.")
 			}
 		}
 		if options.email == "" {
-			options.email, err = a.promptSetupValue("Git email", beforeProfile.GitEmail, true)
+			options.email, err = a.promptValidatedSetupValue("Commit author email", beforeProfile.GitEmail, true, validateSetupGitEmail)
 			if err != nil {
 				return a.fail(exitUsage, "setup_cancelled", err, "Nothing was changed.")
 			}
 		}
 		if interactive && !options.githubSet {
-			options.github, err = a.promptSetupValue("GitHub username (optional)", beforeProfile.GitHubUser, false)
+			options.github, err = a.promptValidatedSetupValue("GitHub username (optional; used for guidance, not login)", beforeProfile.GitHubUser, false, validateSetupGitHubUser)
 			if err != nil {
 				return a.fail(exitUsage, "setup_cancelled", err, "Nothing was changed.")
 			}
 			options.githubSet = true
+		}
+		if err := normalizeSetupIdentity(&options); err != nil {
+			return a.fail(exitUsage, "invalid_profile", err, "Fix the commit identity before choosing authentication.")
 		}
 		if options.auth == "" {
 			defaultAuth := "generate"
@@ -144,20 +176,44 @@ func (a application) setup(args []string) int {
 				defaultAuth = "existing"
 			} else if beforeProfile.DisableSigning {
 				defaultAuth = "identity-only"
+			} else if !profileExists && len(preflight.EffectivePushURLs()) > 0 && !allSSHRemotes(preflight.EffectivePushURLs()) {
+				defaultAuth = "identity-only"
 			}
-			options.auth, err = a.promptSetupChoice("Authentication", []setupChoice{
-				{Value: "generate", Label: "Generate a new SSH key (recommended)"},
-				{Value: "existing", Label: "Use an existing SSH key"},
-				{Value: "identity-only", Label: "Identity only (push authentication is not managed)"},
-			}, defaultAuth)
+			fmt.Fprintln(a.out, "\nPush account:")
+			fmt.Fprintln(a.out, "  A separate SSH key prevents this repository from silently using a different account.")
+			authChoices := []setupChoice{
+				{Value: "generate", Label: "Create a separate SSH key for this profile (recommended)"},
+				{Value: "existing", Label: "Use an SSH key already on this computer"},
+				{Value: "identity-only", Label: "Configure commit identity only (push account stays external)"},
+			}
+			if len(preflight.EffectivePushURLs()) > 0 && !allSSHRemotes(preflight.EffectivePushURLs()) {
+				authChoices[0].Label = "Create a separate SSH key (requires changing this remote to SSH first)"
+				authChoices[1].Label = "Use an existing SSH key (requires changing this remote to SSH first)"
+				authChoices[2].Label = "Configure commit identity only (recommended for the current remote)"
+			}
+			options.auth, err = a.promptSetupChoice("How should Git authenticate pushes", authChoices, defaultAuth)
 			if err != nil {
 				return a.fail(exitUsage, "setup_cancelled", err, "Nothing was changed.")
 			}
 		}
+		if options.auth == "generate" || options.auth == "existing" {
+			if code, remoteErr, hint := setupSSHRemoteError(preflight); remoteErr != nil {
+				return a.fail(exitGit, code, remoteErr, hint)
+			}
+		}
 		if options.auth == "existing" && options.sshKey == "" {
-			options.sshKey, err = a.promptSetupValue("Private SSH key path", beforeProfile.SSHKey, true)
-			if err != nil {
-				return a.fail(exitUsage, "setup_cancelled", err, "Nothing was changed.")
+			defaultSSHKey := beforeProfile.SSHKey
+			for {
+				options.sshKey, err = a.promptSetupValue("Private SSH key path (not the .pub file)", defaultSSHKey, true)
+				if err != nil {
+					return a.fail(exitUsage, "setup_cancelled", err, "Nothing was changed.")
+				}
+				if _, inspectErr := sshkey.InspectPair(options.sshKey); inspectErr == nil {
+					break
+				} else {
+					fmt.Fprintf(a.out, "  Please try again: %s\n", escapeDisplayControls(inspectErr.Error()))
+					defaultSSHKey = ""
+				}
 			}
 		}
 		if options.auth == "generate" && options.keyPath == "" {
@@ -173,14 +229,17 @@ func (a application) setup(args []string) int {
 		if options.signing == "" {
 			if options.auth == "identity-only" {
 				options.signing = "disabled"
+				fmt.Fprintln(a.out, "\nCommit verification: signing will be disabled here so an inherited work key cannot be used accidentally.")
 			} else {
 				defaultSigning := "same-key"
 				if beforeProfile.DisableSigning {
 					defaultSigning = "disabled"
 				}
-				options.signing, err = a.promptSetupChoice("Commit signing", []setupChoice{
-					{Value: "same-key", Label: "Sign with the same SSH key (recommended)"},
-					{Value: "disabled", Label: "Disable signing in this repository"},
+				fmt.Fprintln(a.out, "\nCommit verification:")
+				fmt.Fprintln(a.out, "  Signed commits can be shown as Verified by GitHub after the public key is registered there.")
+				options.signing, err = a.promptSetupChoice("How should commits be handled", []setupChoice{
+					{Value: "same-key", Label: "Sign commits with this profile's SSH key (recommended)"},
+					{Value: "disabled", Label: "Do not sign commits in this repository"},
 				}, defaultSigning)
 				if err != nil {
 					return a.fail(exitUsage, "setup_cancelled", err, "Nothing was changed.")
@@ -218,12 +277,8 @@ func (a application) setup(args []string) int {
 	}
 
 	if options.auth != "identity-only" {
-		pushURLs := preflight.EffectivePushURLs()
-		if (preflight.PushRemoteExplicit || preflight.PushRemote != "") && len(pushURLs) == 0 {
-			return a.fail(exitGit, "push_remote_unresolved", errors.New("the configured default push destination is not a resolvable remote"), "Fix the repository's push remote, or choose --auth identity-only.")
-		}
-		if len(pushURLs) > 0 && !allSSHRemotes(pushURLs) {
-			return a.fail(exitGit, "non_ssh_remote", errors.New("the default push destination does not exclusively use SSH"), "Change the remote to an SSH URL, or choose --auth identity-only. gitctx did not rewrite the remote.")
+		if code, remoteErr, hint := setupSSHRemoteError(preflight); remoteErr != nil {
+			return a.fail(exitGit, code, remoteErr, hint)
 		}
 	}
 
@@ -252,7 +307,9 @@ func (a application) setup(args []string) int {
 			return a.fail(exitUsage, "invalid_ssh_key", err, "Provide a private key whose matching public key is at <private-key>.pub.")
 		}
 	case "generate":
-		fmt.Fprintln(a.out, "ssh-keygen will now prompt for a passphrase while it creates and validates the key in a protected temporary location.")
+		fmt.Fprintln(a.out, "\nCreating the SSH key")
+		fmt.Fprintln(a.out, "  ssh-keygen will show a protected temporary path; gitctx moves the finished key to the path you chose.")
+		fmt.Fprintln(a.out, "  A passphrase is recommended. It is read directly by ssh-keygen and is never seen or stored by gitctx.")
 		pair, err = sshkey.Generate(options.profile, options.keyPath, a.rawIn, a.out, a.err)
 		if err != nil {
 			return a.fail(exitUsage, "key_generation_failed", err, "No profile or Git setting was changed.")
@@ -415,28 +472,26 @@ func (a application) setup(args []string) int {
 		return exitOK
 	}
 
-	verb := "Configured"
-	if profileExists {
-		verb = "Updated"
-	}
-	fmt.Fprintf(a.out, "%s profile %q for %s.\n", verb, options.profile, escapeDisplayControls(state.Repository))
-	fmt.Fprintf(a.out, "  Git author  %s <%s>\n", escapeDisplayControls(selected.GitName), escapeDisplayControls(selected.GitEmail))
+	fmt.Fprintf(a.out, "\nLocal setup complete for %s\n", escapeDisplayControls(state.Repository))
+	fmt.Fprintf(a.out, "  Profile     %s\n", escapeDisplayControls(options.profile))
+	fmt.Fprintf(a.out, "  Commits     %s <%s>\n", escapeDisplayControls(selected.GitName), escapeDisplayControls(selected.GitEmail))
 	if selected.GitHubUser != "" {
 		fmt.Fprintf(a.out, "  GitHub      @%s\n", escapeDisplayControls(selected.GitHubUser))
 	}
 	if selected.SSHKey == "" {
-		fmt.Fprintln(a.out, "  Auth        identity only (not verified by gitctx)")
+		fmt.Fprintln(a.out, "  Pushes      account remains external and is not checked by gitctx")
 	} else {
-		fmt.Fprintf(a.out, "  SSH key     %s\n", escapeDisplayControls(selected.SSHKey))
+		fmt.Fprintf(a.out, "  Pushes      use this profile's separate SSH key\n")
+		fmt.Fprintf(a.out, "  Private key %s\n", escapeDisplayControls(selected.SSHKey))
 		fmt.Fprintf(a.out, "  Public key  %s\n", escapeDisplayControls(pair.PublicPath))
 		fmt.Fprintf(a.out, "  Fingerprint %s\n", escapeDisplayControls(pair.Fingerprint))
 	}
 	if selected.DisableSigning {
-		fmt.Fprintln(a.out, "  Signing     blocked for automatic signing and bare -S")
+		fmt.Fprintln(a.out, "  Signing     disabled here; an inherited work signing key will not be used")
 	} else {
-		fmt.Fprintln(a.out, "  Signing     enabled with the profile's SSH public key")
+		fmt.Fprintln(a.out, "  Signing     enabled with this profile's SSH key")
 	}
-	fmt.Fprintln(a.out, "  Global user.name, user.email, and signing settings were not changed.")
+	fmt.Fprintln(a.out, "  Global Git  work identity and signing defaults were not changed")
 	if len(affectedRules) > 0 {
 		fmt.Fprintf(a.out, "  Auto rules   synchronized for %d director", len(affectedRules))
 		if len(affectedRules) == 1 {
@@ -445,25 +500,18 @@ func (a application) setup(args []string) int {
 			fmt.Fprintln(a.out, "ies")
 		}
 	}
-	for _, warning := range warnings {
-		fmt.Fprintf(a.out, "  Warning     %s\n", escapeDisplayControls(warning.Message))
+	printSetupCheckSummary(a.out, diagnosis)
+	for _, warning := range setupVisibleWarnings(warnings) {
+		fmt.Fprintf(a.out, "  Note        %s\n", escapeDisplayControls(warning.Message))
 	}
 	if pair.PublicPath != "" {
-		account := "the intended Git hosting account"
-		if selected.GitHubUser != "" {
-			account = "GitHub account @" + selected.GitHubUser
-		}
-		fmt.Fprintf(a.out, "\nNext: add %s to %s as an authentication key", escapeDisplayControls(pair.PublicPath), escapeDisplayControls(account))
-		if selected.SigningKey != "" {
-			fmt.Fprint(a.out, " and as a signing key")
-		}
-		fmt.Fprintln(a.out, ". gitctx did not upload it or test connectivity.")
+		printKeyRegistrationSteps(a.out, selected, pair.PublicPath, state)
+	} else {
+		fmt.Fprintln(a.out, "\nReady to commit with this identity. Pushes may still use credentials managed outside gitctx.")
 	}
-	fmt.Fprintln(a.out, "\nVerification:")
-	for _, item := range diagnosis.Checks {
-		fmt.Fprintf(a.out, "  %-4s  %-17s %s\n", checkLabel(item.Status), escapeDisplayControls(item.Name), escapeDisplayControls(item.Message))
+	if diagnosis.Status == "error" {
+		fmt.Fprintf(a.out, "\nReview the failed checks: gitctx doctor --repo %s\n", shellDisplayQuote(state.Repository))
 	}
-	fmt.Fprintf(a.out, "  Result: %s\n", diagnosis.Status)
 	if diagnosis.Status == "error" {
 		return exitUnsafe
 	}
@@ -531,6 +579,18 @@ func setupOptionPresent(args []string, target string) bool {
 	return false
 }
 
+func setupEditRequested(args []string) bool {
+	for _, option := range []string{
+		"--name", "--email", "--github", "--clear-github", "--auth",
+		"--ssh-key", "--key-path", "--signing", "--allow-key-reuse",
+	} {
+		if setupOptionPresent(args, option) {
+			return true
+		}
+	}
+	return false
+}
+
 func validateSetupOptions(options setupOptions) error {
 	switch options.auth {
 	case "generate":
@@ -583,69 +643,225 @@ type setupChoice struct {
 	Label string
 }
 
-func (a application) promptSetupValue(label, defaultValue string, required bool) (string, error) {
-	if defaultValue == "" {
-		fmt.Fprintf(a.out, "%s: ", label)
+func printSetupIntroduction(w io.Writer, profileName, repository string, pushURLs, affectedRules []string) {
+	fmt.Fprintf(w, "\nSet up %q for this repository\n", escapeDisplayControls(profileName))
+	fmt.Fprintf(w, "  Repository  %s\n", escapeDisplayControls(repository))
+	if len(pushURLs) > 0 {
+		for index, remote := range pushURLs {
+			service, transport := describeRemote(remote)
+			label := "Push remote"
+			if index > 0 {
+				label = ""
+			}
+			fmt.Fprintf(w, "  %-12s%s over %s: %s\n", label, escapeDisplayControls(service), escapeDisplayControls(transport), displayRemote(remote))
+		}
+		if !allSSHRemotes(pushURLs) {
+			fmt.Fprintln(w, "              a repository-specific SSH key will work only after this remote is changed to SSH")
+		}
 	} else {
-		fmt.Fprintf(a.out, "%s [%s]: ", label, escapeDisplayControls(defaultValue))
+		fmt.Fprintln(w, "  Pushes to   no remote is configured yet")
 	}
-	value, err := a.in.ReadString('\n')
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", strings.ToLower(label), err)
+	if len(affectedRules) == 0 {
+		fmt.Fprintln(w, "  Scope       only this repository; your global work identity and signing defaults stay unchanged")
+	} else {
+		fmt.Fprintf(w, "  Scope       this repository; %d existing automatic identity rule", len(affectedRules))
+		if len(affectedRules) == 1 {
+			fmt.Fprintln(w, " will also be synchronized after confirmation")
+		} else {
+			fmt.Fprintln(w, "s will also be synchronized after confirmation")
+		}
+		fmt.Fprintln(w, "              your global work identity and signing defaults stay unchanged")
 	}
-	value = strings.TrimSpace(value)
-	if value == "" {
-		value = defaultValue
+	fmt.Fprintln(w, "\nA profile keeps three things aligned:")
+	fmt.Fprintln(w, "  Commits     the name and email recorded in history")
+	fmt.Fprintln(w, "  Pushes      the account key used to reach the remote")
+	fmt.Fprintln(w, "  Signing     proof that a commit came from this profile")
+}
+
+func describeRemote(remote string) (string, string) {
+	if host, ok := gitconfig.SSHRemoteHost(remote); ok {
+		return hostingService(host), "SSH"
 	}
-	if required && value == "" {
-		return "", fmt.Errorf("%s is required", label)
+	parsed, err := url.Parse(remote)
+	if err == nil && parsed.Hostname() != "" {
+		transport := strings.ToUpper(parsed.Scheme)
+		if transport == "" {
+			transport = "a non-SSH transport"
+		}
+		return hostingService(parsed.Hostname()), transport
 	}
-	return value, nil
+	return "Git hosting", "a non-SSH transport"
+}
+
+func setupSSHRemoteError(state gitconfig.State) (string, error, string) {
+	pushURLs := state.EffectivePushURLs()
+	if (state.PushRemoteExplicit || state.PushRemote != "") && len(pushURLs) == 0 {
+		return "push_remote_unresolved", errors.New("the configured default push destination is not a resolvable remote"), "Fix the repository's push remote, or choose identity-only setup."
+	}
+	if len(pushURLs) == 0 || allSSHRemotes(pushURLs) {
+		return "", nil, ""
+	}
+	remoteName := state.PushRemote
+	if remoteName == "" {
+		remoteName = "origin"
+	}
+	problem := fmt.Errorf("push remote %q uses %s; a repository-specific SSH key would not be used", remoteName, strings.Join(displayRemotes(pushURLs), ", "))
+	hint := "Change this remote to the SSH URL for the same repository, or choose identity-only setup. gitctx did not rewrite the remote."
+	if len(pushURLs) == 1 {
+		if converted, ok := sshConversionURL(pushURLs[0]); ok {
+			hint = fmt.Sprintf("Change the push URL explicitly with: git remote set-url --push %s %s — or choose identity-only setup. gitctx did not rewrite the remote.", shellDisplayQuote(remoteName), shellDisplayQuote(converted))
+		}
+	}
+	return "non_ssh_remote", problem, hint
+}
+
+func sshConversionURL(remote string) (string, bool) {
+	parsed, err := url.Parse(remote)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil || parsed.Port() != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	switch host {
+	case "github.com", "gitlab.com", "bitbucket.org":
+	default:
+		return "", false
+	}
+	path := strings.TrimPrefix(parsed.EscapedPath(), "/")
+	lowerPath := strings.ToLower(path)
+	if path == "" || strings.Contains(lowerPath, "%2f") || strings.Contains(lowerPath, "%5c") {
+		return "", false
+	}
+	decodedPath, err := url.PathUnescape(path)
+	if err != nil || strings.ContainsAny(decodedPath, "\\\r\n") {
+		return "", false
+	}
+	segments := strings.Split(strings.TrimSuffix(decodedPath, "/"), "/")
+	if len(segments) < 2 {
+		return "", false
+	}
+	for _, segment := range segments {
+		if segment == "" || segment == "." || segment == ".." {
+			return "", false
+		}
+	}
+	if (host == "github.com" || host == "bitbucket.org") && len(segments) != 2 {
+		return "", false
+	}
+	if host == "gitlab.com" {
+		for _, segment := range segments {
+			if segment == "-" {
+				return "", false
+			}
+		}
+	}
+	return "git@" + host + ":" + decodedPath, true
+}
+
+func validateSetupGitName(value string) error {
+	return (profile.Profile{GitName: value, GitEmail: "gitctx@example.com"}).Normalize().Validate()
+}
+
+func validateSetupGitEmail(value string) error {
+	return (profile.Profile{GitName: "gitctx user", GitEmail: value}).Normalize().Validate()
+}
+
+func validateSetupGitHubUser(value string) error {
+	return (profile.Profile{GitName: "gitctx user", GitEmail: "gitctx@example.com", GitHubUser: value}).Normalize().Validate()
+}
+
+func (a application) promptValidatedSetupValue(label, defaultValue string, required bool, validate func(string) error) (string, error) {
+	for {
+		value, err := a.promptSetupValue(label, defaultValue, required)
+		if err != nil {
+			return "", err
+		}
+		if err := validate(value); err != nil {
+			fmt.Fprintf(a.out, "  Please try again: %s\n", escapeDisplayControls(err.Error()))
+			defaultValue = ""
+			continue
+		}
+		return value, nil
+	}
+}
+
+func (a application) promptSetupValue(label, defaultValue string, required bool) (string, error) {
+	for {
+		if defaultValue == "" {
+			fmt.Fprintf(a.out, "%s: ", label)
+		} else {
+			fmt.Fprintf(a.out, "%s [%s]: ", label, escapeDisplayControls(defaultValue))
+		}
+		value, err := a.in.ReadString('\n')
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", strings.ToLower(label), err)
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			value = defaultValue
+		}
+		if required && value == "" {
+			fmt.Fprintln(a.out, "  A value is required. Please try again.")
+			continue
+		}
+		return value, nil
+	}
 }
 
 func (a application) promptSetupChoice(label string, choices []setupChoice, defaultValue string) (string, error) {
-	fmt.Fprintf(a.out, "%s:\n", label)
+	defaultChoice := defaultValue
 	for index, choice := range choices {
-		fmt.Fprintf(a.out, "  %d) %s\n", index+1, choice.Label)
-	}
-	fmt.Fprintf(a.out, "Choice [%s]: ", defaultValue)
-	value, err := a.in.ReadString('\n')
-	if err != nil {
-		return "", fmt.Errorf("read %s choice: %w", strings.ToLower(label), err)
-	}
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" {
-		return defaultValue, nil
-	}
-	for index, choice := range choices {
-		if value == choice.Value || value == fmt.Sprintf("%d", index+1) {
-			return choice.Value, nil
+		if choice.Value == defaultValue {
+			defaultChoice = fmt.Sprintf("%d", index+1)
+			break
 		}
 	}
-	return "", fmt.Errorf("invalid %s choice %q", strings.ToLower(label), value)
+	for {
+		fmt.Fprintf(a.out, "%s:\n", label)
+		for index, choice := range choices {
+			fmt.Fprintf(a.out, "  %d) %s\n", index+1, choice.Label)
+		}
+		fmt.Fprintf(a.out, "Choice [%s]: ", defaultChoice)
+		value, err := a.in.ReadString('\n')
+		if err != nil {
+			return "", fmt.Errorf("read %s choice: %w", strings.ToLower(label), err)
+		}
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			return defaultValue, nil
+		}
+		for index, choice := range choices {
+			if value == choice.Value || value == fmt.Sprintf("%d", index+1) {
+				return choice.Value, nil
+			}
+		}
+		fmt.Fprintf(a.out, "  Please choose a number from 1 to %d.\n", len(choices))
+	}
 }
 
 func (a application) promptConfirmation(label string) (bool, error) {
-	fmt.Fprintf(a.out, "%s? [y/N]: ", label)
-	value, err := a.in.ReadString('\n')
-	if err != nil {
-		return false, fmt.Errorf("read confirmation: %w", err)
-	}
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "y", "yes":
-		return true, nil
-	case "", "n", "no":
-		return false, nil
-	default:
-		return false, fmt.Errorf("confirmation must be yes or no")
+	for {
+		fmt.Fprintf(a.out, "%s? [y/N]: ", label)
+		value, err := a.in.ReadString('\n')
+		if err != nil {
+			return false, fmt.Errorf("read confirmation: %w", err)
+		}
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "y", "yes":
+			return true, nil
+		case "", "n", "no":
+			return false, nil
+		default:
+			fmt.Fprintln(a.out, "  Please answer yes or no.")
+		}
 	}
 }
 
 func printSetupPlan(w io.Writer, options setupOptions, repository, keyPath string, affectedRules []string) {
-	fmt.Fprintln(w, "\nSetup plan:")
+	fmt.Fprintln(w, "\nReady to apply:")
 	fmt.Fprintf(w, "  Repository  %s\n", escapeDisplayControls(repository))
 	fmt.Fprintf(w, "  Profile     %s\n", escapeDisplayControls(options.profile))
-	fmt.Fprintf(w, "  Git author  %s <%s>\n", escapeDisplayControls(options.gitName), escapeDisplayControls(options.email))
+	fmt.Fprintf(w, "  Commits     %s <%s>\n", escapeDisplayControls(options.gitName), escapeDisplayControls(options.email))
+	fmt.Fprintln(w, "              this email is stored in commit history and may become public")
 	if options.github != "" {
 		fmt.Fprintf(w, "  GitHub      @%s\n", escapeDisplayControls(options.github))
 	} else {
@@ -653,17 +869,18 @@ func printSetupPlan(w io.Writer, options setupOptions, repository, keyPath strin
 	}
 	switch options.auth {
 	case "generate":
-		fmt.Fprintf(w, "  Auth        generate SSH key at %s\n", escapeDisplayControls(keyPath))
+		fmt.Fprintf(w, "  Pushes      create a separate SSH key at %s\n", escapeDisplayControls(keyPath))
 	case "existing":
-		fmt.Fprintf(w, "  Auth        existing SSH key %s\n", escapeDisplayControls(keyPath))
+		fmt.Fprintf(w, "  Pushes      use existing SSH key %s\n", escapeDisplayControls(keyPath))
 	default:
-		fmt.Fprintln(w, "  Auth        identity only; pushes remain external and unverified")
+		fmt.Fprintln(w, "  Pushes      stay external and are not checked by gitctx")
 	}
 	if options.signing == "same-key" {
-		fmt.Fprintln(w, "  Signing     same SSH key")
+		fmt.Fprintln(w, "  Signing     sign commits with this profile's SSH key")
 	} else {
-		fmt.Fprintln(w, "  Signing     block automatic signing and bare -S")
+		fmt.Fprintln(w, "  Signing     disabled here so an inherited work key is not used")
 	}
+	fmt.Fprintln(w, "  Global Git  work identity and signing defaults stay unchanged")
 	if len(affectedRules) > 0 {
 		fmt.Fprintf(w, "  Auto rules   this profile's identity will also update in %d configured director", len(affectedRules))
 		if len(affectedRules) == 1 {
@@ -675,6 +892,138 @@ func printSetupPlan(w io.Writer, options setupOptions, repository, keyPath strin
 			fmt.Fprintf(w, "               %s\n", escapeDisplayControls(directory))
 		}
 	}
+}
+
+func printSetupCheckSummary(w io.Writer, result diagnosis) {
+	counts := map[string]int{}
+	for _, item := range result.Checks {
+		counts[item.Status]++
+	}
+	fmt.Fprintf(w, "  Local check %d passed", counts[statusPass])
+	if counts[statusWarn] > 0 {
+		fmt.Fprintf(w, ", %d warning", counts[statusWarn])
+		if counts[statusWarn] != 1 {
+			fmt.Fprint(w, "s")
+		}
+	}
+	if counts[statusFail] > 0 {
+		fmt.Fprintf(w, ", %d failed", counts[statusFail])
+	}
+	fmt.Fprintln(w)
+	for _, item := range result.Checks {
+		if item.Status == statusFail {
+			fmt.Fprintf(w, "  FAIL        %s: %s\n", escapeDisplayControls(item.Name), escapeDisplayControls(item.Message))
+		} else if item.ID == "ssh_route" && item.Status == statusWarn && strings.Contains(item.Message, "Host alias") {
+			fmt.Fprintf(w, "  WARN        %s: %s\n", escapeDisplayControls(item.Name), escapeDisplayControls(item.Message))
+		}
+	}
+	fmt.Fprintln(w, "  Details     run 'gitctx doctor' for the full local checklist")
+}
+
+func printKeyRegistrationSteps(w io.Writer, selected profile.Profile, publicKeyPath string, state gitconfig.State) {
+	targets := registrationDestinations(state.EffectivePushURLs(), selected.GitHubUser != "")
+	fmt.Fprintln(w, "\nFinish connecting this profile key")
+	if selected.GitHubUser != "" {
+		fmt.Fprintf(w, "  Expected GitHub account: @%s (saved as guidance, not used to log in)\n", escapeDisplayControls(selected.GitHubUser))
+	}
+	fmt.Fprintln(w, "  The public key is safe to share. Never upload or copy the private key.")
+	fmt.Fprintln(w, "  1. Copy the public key:")
+	fmt.Fprintf(w, "       %s\n", publicKeyCopyCommand(publicKeyPath))
+	step := 2
+	for _, target := range targets {
+		if target.SettingsURL != "" {
+			fmt.Fprintf(w, "  %d. Open %s\n", step, target.SettingsURL)
+			fmt.Fprintf(w, "     Add the copied key as an Authentication Key for %s.\n", escapeDisplayControls(target.Service))
+		} else {
+			fmt.Fprintf(w, "  %d. Add the copied key as an Authentication Key in your %s account.\n", step, escapeDisplayControls(target.Service))
+		}
+		step++
+		if selected.SigningKey != "" {
+			if target.SeparateSigningKey {
+				fmt.Fprintf(w, "  %d. Add the same public key to %s a second time as a Signing Key.\n", step, escapeDisplayControls(target.Service))
+			} else {
+				fmt.Fprintf(w, "  %d. Commit signing is enabled locally; follow %s's SSH signing-key instructions if it requires separate registration.\n", step, escapeDisplayControls(target.Service))
+			}
+			step++
+		}
+	}
+	if len(state.EffectivePushURLs()) == 0 {
+		fmt.Fprintf(w, "  %d. Add a default SSH remote for this repository", step)
+		if selected.GitHubUser != "" {
+			fmt.Fprintln(w, ", replacing REPOSITORY:")
+			fmt.Fprintf(w, "       git remote add origin %s\n", shellDisplayQuote("git@github.com:"+selected.GitHubUser+"/REPOSITORY.git"))
+		} else {
+			fmt.Fprintln(w, ".")
+		}
+		step++
+	}
+	fmt.Fprintf(w, "  %d. Check the connection without pushing anything:\n", step)
+	fmt.Fprintf(w, "       gitctx verify --repo %s\n", shellDisplayQuote(state.Repository))
+}
+
+type registrationTarget struct {
+	Service            string
+	SettingsURL        string
+	SeparateSigningKey bool
+}
+
+func registrationDestinations(remotes []string, hasGitHubMetadata bool) []registrationTarget {
+	var result []registrationTarget
+	seen := map[string]bool{}
+	for _, remote := range remotes {
+		host, ok := gitconfig.SSHRemoteHost(remote)
+		if !ok {
+			continue
+		}
+		host = strings.ToLower(host)
+		target := registrationTarget{Service: hostingService(host)}
+		switch strings.ToLower(host) {
+		case "github.com", "ssh.github.com":
+			target.SettingsURL = "https://github.com/settings/ssh/new"
+			target.SeparateSigningKey = true
+		case "gitlab.com":
+			target.SettingsURL = "https://gitlab.com/-/user_settings/ssh_keys"
+		case "bitbucket.org":
+			target.SettingsURL = "https://bitbucket.org/account/settings/ssh-keys/"
+		}
+		key := host
+		if target.SettingsURL != "" {
+			key = target.SettingsURL
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, target)
+	}
+	if len(result) == 0 {
+		if hasGitHubMetadata {
+			return []registrationTarget{{Service: "GitHub", SettingsURL: "https://github.com/settings/ssh/new", SeparateSigningKey: true}}
+		}
+		return []registrationTarget{{Service: "Git hosting"}}
+	}
+	return result
+}
+
+func setupVisibleWarnings(warnings []notice) []notice {
+	result := make([]notice, 0, len(warnings))
+	for _, warning := range warnings {
+		switch warning.Code {
+		case "key_registration_unverified", "push_remote_missing", "ssh_routing_unverified":
+			continue
+		default:
+			result = append(result, warning)
+		}
+	}
+	return result
+}
+
+func publicKeyCopyCommand(path string) string {
+	quoted := shellDisplayQuote(path)
+	if runtime.GOOS == "darwin" {
+		return "pbcopy < " + quoted
+	}
+	return "cat " + quoted
 }
 
 func inheritedKeyMatches(inherited string, pair sshkey.Pair, repository string) bool {
@@ -800,15 +1149,17 @@ func printSetupHelp(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   gitctx setup <profile> [options]
 
-Create or update a profile and apply its full SSH/signing context to one
-repository. Existing automatic identity rules for that profile are synchronized
-and shown before confirmation. The guided flow can generate a separate SSH key,
-use an existing key, or manage identity only.
-It always makes an explicit repository-local signing choice, and never changes
-global Git identity or signing settings. The disabled mode blocks automatic
-signing and a bare -S, including fallback through a custom SSH signing program.
-Like any local Git setting, a deliberate command-scoped -c override can replace
-the guard.
+Run this inside a repository for a guided first-time setup. It explains and
+aligns the commit name/email, push account key, and commit-signing key. The flow
+detects the default remote, previews every change, and can create a separate SSH
+key, reuse an existing key, or configure commit identity only. In a terminal,
+omitting <profile> prompts with "personal" as the example/default.
+
+SSH authentication and signing are configured only for the selected repository.
+Global work identity and signing defaults are not changed. Existing automatic
+identity rules for an edited profile are shown and synchronized. After
+registering an SSH public key with the hosting account, run 'gitctx verify' for
+a read-only connection check.
 
 Options:
   --name <name>          Git commit author name
