@@ -1,0 +1,12 @@
+# Compiled CLI binaries
+/gitctx
+/bin/
+/dist/
+
+# Test and coverage output
+/coverage.out
+
+# Local editor and OS files
+.DS_Store
+.vscode/
+.idea/
