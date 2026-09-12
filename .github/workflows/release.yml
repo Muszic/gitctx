@@ -1,0 +1,280 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GOENV: "off"
+  GOTOOLCHAIN: local
+  GOWORK: "off"
+
+jobs:
+  verify:
+    name: Verify release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      commit: ${{ steps.version.outputs.commit }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.1
+          cache: false
+
+      - name: Validate tag and source commit
+        id: version
+        shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$TAG_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release tags must use canonical vMAJOR.MINOR.PATCH form." >&2
+            exit 1
+          fi
+
+          tag_commit=$(git rev-parse --verify "refs/tags/${TAG_NAME}^{commit}")
+          head_commit=$(git rev-parse --verify HEAD)
+          if [[ "$tag_commit" != "$head_commit" ]]; then
+            echo "The checked-out commit does not match the release tag." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
+            echo "The release tag must point to a commit contained in origin/main." >&2
+            exit 1
+          fi
+
+          printf 'commit=%s\n' "$tag_commit" >>"$GITHUB_OUTPUT"
+          printf 'version=%s\n' "${TAG_NAME#v}" >>"$GITHUB_OUTPUT"
+
+      - name: Run tests
+        run: go test -mod=readonly ./...
+
+      - name: Run race detector
+        run: go test -mod=readonly -race ./...
+
+      - name: Run vet
+        run: go vet -mod=readonly ./...
+
+      - name: Check module files
+        run: go mod tidy -diff
+
+      - name: Test installer and release packaging
+        run: ./scripts/test-release.sh
+
+  build:
+    name: Build release assets
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.1
+          cache: false
+
+      - name: Build deterministic archives
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: ./scripts/release.sh --version "$VERSION" --output-dir dist
+
+      - name: Verify release assets
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          expected=(
+            "gitctx-$VERSION-darwin-amd64.tar.gz"
+            "gitctx-$VERSION-darwin-arm64.tar.gz"
+            "gitctx-$VERSION-linux-amd64.tar.gz"
+            "gitctx-$VERSION-linux-arm64.tar.gz"
+            "gitctx-$VERSION-windows-amd64.zip"
+            "gitctx-$VERSION-checksums.txt"
+          )
+          for file in "${expected[@]}"; do
+            [[ -f "dist/$file" && ! -L "dist/$file" ]] || {
+              echo "Missing or unsafe release asset: $file" >&2
+              exit 1
+            }
+          done
+          [[ "$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')" == "${#expected[@]}" ]] || {
+            echo "The release directory contains unexpected files." >&2
+            exit 1
+          }
+          (cd dist && sha256sum -c "gitctx-$VERSION-checksums.txt")
+
+          mkdir extracted
+          tar -xzf "dist/gitctx-$VERSION-linux-amd64.tar.gz" -C extracted
+          [[ "$(./extracted/gitctx version)" == "gitctx $VERSION" ]] || {
+            echo "The release binary contains the wrong version." >&2
+            exit 1
+          }
+
+      - name: Stage verified assets for publication
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            dist/gitctx-${{ needs.verify.outputs.version }}-darwin-amd64.tar.gz
+            dist/gitctx-${{ needs.verify.outputs.version }}-darwin-arm64.tar.gz
+            dist/gitctx-${{ needs.verify.outputs.version }}-linux-amd64.tar.gz
+            dist/gitctx-${{ needs.verify.outputs.version }}-linux-arm64.tar.gz
+            dist/gitctx-${{ needs.verify.outputs.version }}-windows-amd64.zip
+            dist/gitctx-${{ needs.verify.outputs.version }}-checksums.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+          include-hidden-files: false
+
+  publish:
+    name: Publish private GitHub release
+    needs:
+      - verify
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download exact build artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: dist
+
+      - name: Recheck assets without executing repository code
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          expected=(
+            "gitctx-$VERSION-darwin-amd64.tar.gz"
+            "gitctx-$VERSION-darwin-arm64.tar.gz"
+            "gitctx-$VERSION-linux-amd64.tar.gz"
+            "gitctx-$VERSION-linux-arm64.tar.gz"
+            "gitctx-$VERSION-windows-amd64.zip"
+            "gitctx-$VERSION-checksums.txt"
+          )
+          for file in "${expected[@]}"; do
+            [[ -f "dist/$file" && ! -L "dist/$file" ]] || {
+              echo "Missing or unsafe release asset: $file" >&2
+              exit 1
+            }
+          done
+          [[ "$(find dist -maxdepth 1 -type f | wc -l | tr -d ' ')" == "${#expected[@]}" ]] || {
+            echo "The downloaded artifact contains unexpected files." >&2
+            exit 1
+          }
+          (cd dist && sha256sum -c "gitctx-$VERSION-checksums.txt")
+
+      - name: Create, verify, and publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EXPECTED_COMMIT: ${{ needs.verify.outputs.commit }}
+          TAG_NAME: ${{ github.ref_name }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          resolve_remote_tag_commit() {
+            local object_type object_sha response depth
+            response=$(gh api "repos/$GH_REPO/git/ref/tags/$TAG_NAME" \
+              --jq '[.object.type, .object.sha] | @tsv')
+            IFS=$'\t' read -r object_type object_sha <<<"$response"
+
+            for depth in 1 2 3 4 5; do
+              case "$object_type" in
+                commit)
+                  printf '%s\n' "$object_sha"
+                  return 0
+                  ;;
+                tag)
+                  response=$(gh api "repos/$GH_REPO/git/tags/$object_sha" \
+                    --jq '[.object.type, .object.sha] | @tsv')
+                  IFS=$'\t' read -r object_type object_sha <<<"$response"
+                  ;;
+                *)
+                  echo "The release tag does not resolve to a commit." >&2
+                  return 1
+                  ;;
+              esac
+            done
+
+            echo "The release tag contains too many nested tag objects." >&2
+            return 1
+          }
+
+          assert_remote_tag_unchanged() {
+            local remote_commit
+            remote_commit=$(resolve_remote_tag_commit)
+            if [[ "$remote_commit" != "$EXPECTED_COMMIT" ]]; then
+              echo "The remote release tag moved after verification; refusing to publish." >&2
+              return 1
+            fi
+          }
+
+          assets=(
+            "dist/gitctx-$VERSION-darwin-amd64.tar.gz"
+            "dist/gitctx-$VERSION-darwin-arm64.tar.gz"
+            "dist/gitctx-$VERSION-linux-amd64.tar.gz"
+            "dist/gitctx-$VERSION-linux-arm64.tar.gz"
+            "dist/gitctx-$VERSION-windows-amd64.zip"
+            "dist/gitctx-$VERSION-checksums.txt"
+          )
+          assert_remote_tag_unchanged
+          gh release create "$TAG_NAME" "${assets[@]}" \
+            --verify-tag \
+            --draft \
+            --generate-notes \
+            --fail-on-no-commits \
+            --title "gitctx $VERSION"
+
+          is_draft=$(gh release view "$TAG_NAME" --json isDraft --jq '.isDraft')
+          [[ "$is_draft" == "true" ]] || {
+            echo "The release was not created as a draft." >&2
+            exit 1
+          }
+
+          expected_names=$(printf '%s\n' "${assets[@]##*/}" | LC_ALL=C sort)
+          actual_names=$(gh release view "$TAG_NAME" --json assets --jq '.assets[].name' | LC_ALL=C sort)
+          if [[ "$actual_names" != "$expected_names" ]]; then
+            echo "The draft release does not contain exactly the expected assets." >&2
+            exit 1
+          fi
+
+          assert_remote_tag_unchanged
+          gh release edit "$TAG_NAME" --draft=false

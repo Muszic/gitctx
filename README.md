@@ -194,6 +194,19 @@ The MVP uses small lock files while changing its profile store or repository set
 
 Guided browser login, automatic key upload, remote rewriting, hooks, and the VS Code extension are later milestones. The versioned JSON output is the intended integration surface for that extension.
 
+## Automated checks
+
+GitHub Actions runs the test suite on Linux, macOS, and Windows for every pull
+request targeting `main` and every push to `main`. Linux also runs the race
+detector, `go vet`, the module-file check, and the full installer/release
+contract. The release contract runs on macOS as well. Pull-request jobs receive
+a read-only token and do not receive release permissions.
+
+The workflow uses Go 1.22.12 to preserve the documented minimum-version check
+and Go 1.27.1 for current builds. Release binaries are built only with the
+explicitly pinned, supported Go 1.27.1 toolchain; the runner's preinstalled Go
+version is not used implicitly.
+
 ## Build release artifacts
 
 Create version-injected local archives for macOS and Linux on `amd64` and
@@ -206,8 +219,8 @@ make release VERSION=0.1.0
 The command writes normalized `.tar.gz` and `.zip` archives plus a SHA-256
 checksum manifest under `dist/`. Existing release files are refused unless an
 empty output directory is selected or those exact old artifacts are removed
-first; release replacement has no force mode. The workflow is local and does
-not publish, upload, sign, tag, or change Git configuration.
+first; release replacement has no force mode. This local command does not
+publish, upload, sign, tag, or change Git configuration.
 Checksums detect accidental corruption; they do not authenticate a publisher.
 
 Run the end-to-end installer and release test with:
@@ -215,6 +228,35 @@ Run the end-to-end installer and release test with:
 ```sh
 ./scripts/test-release.sh
 ```
+
+## Publish a private release
+
+The release workflow runs only when an intentional tag in canonical
+`vMAJOR.MINOR.PATCH` form is pushed. The tagged commit must already be contained
+in `origin/main`. The workflow retests that exact commit, creates and verifies
+the six expected artifacts, stages a draft GitHub Release, checks the asset
+count, and only then publishes it. Build and test steps run with read-only
+permissions. Only the final publication job receives `contents: write`; it
+downloads the exact staged artifact, rechecks it, does not check out source,
+and does not execute a built binary.
+
+For example, after CI has passed on `main`:
+
+```sh
+git switch main
+git pull --ff-only
+git tag -s v0.1.0 -m "gitctx v0.1.0"
+git push origin v0.1.0
+```
+
+The tag command above creates a signed tag using the signing identity selected
+for this repository. Pushing the tag publishes downloadable archives in this
+repository's GitHub Releases page; it does not make a private repository or its
+assets public. No tag or release is created merely by pushing an ordinary
+commit. The publisher re-resolves the remote tag immediately before creating
+the draft and again before publication. Before the first release, protect `v*`
+tags from force updates or deletion and enable immutable releases in the GitHub
+repository settings to enforce that boundary on the server too.
 
 This repository does not yet contain a software license. Choose and add one
 before distributing public release archives.
