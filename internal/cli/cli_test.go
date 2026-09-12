@@ -30,8 +30,8 @@ func TestProfileWorkflow(t *testing.T) {
 	writeTestPrivateKey(t, key, 0o600)
 
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 
 	stdout, stderr, code := runCLI(t, "add", "personal", "--name", "Ada Lovelace", "--email", "ada@example.com", "--github", "@ada", "--ssh-key", key, "--config", configPath, "--json")
 	if code != 0 {
@@ -77,8 +77,8 @@ func TestCurrentAndDoctorFlagProfileSharedByLaterWorktree(t *testing.T) {
 	repo := t.TempDir()
 	runGit(t, repo, "init", "--quiet")
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	if _, stderr, code := runCLI(t, "add", "personal", "--name", "Ada", "--email", "ada@example.com", "--config", configPath); code != exitOK {
 		t.Fatalf("add exit code = %d: %s", code, stderr)
 	}
@@ -124,8 +124,8 @@ func TestProfileUpdateReportsAndFixesStaleManagedSSH(t *testing.T) {
 	key := filepath.Join(t.TempDir(), "id_ed25519")
 	writeTestPrivateKey(t, key, 0o600)
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	if _, stderr, code := runCLI(t, "add", "personal", "--name", "Ada", "--email", "ada@example.com", "--ssh-key", key, "--config", configPath); code != exitOK {
 		t.Fatalf("add with key exit code = %d: %s", code, stderr)
 	}
@@ -169,8 +169,8 @@ func TestProfileUpdateDoesNotLabelOldSigningKeyAsCurrent(t *testing.T) {
 	repo := t.TempDir()
 	runGit(t, repo, "init", "--quiet")
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	if _, stderr, code := runCLI(t, "add", "personal", "--name", "Ada", "--email", "ada@example.com", "--signing-key", "OLDKEY", "--signing-format", "openpgp", "--config", configPath); code != exitOK {
 		t.Fatalf("add exit code = %d: %s", code, stderr)
 	}
@@ -213,8 +213,8 @@ func TestDoctorFailsWhenGitCannotResolveAuthorIdentity(t *testing.T) {
 	repo := t.TempDir()
 	runGit(t, repo, "init", "--quiet")
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	if _, stderr, code := runCLI(t, "add", "personal", "--name", "Ada", "--email", "ada@example.com", "--config", configPath); code != 0 {
 		t.Fatalf("add exit code = %d: %s", code, stderr)
 	}
@@ -265,8 +265,8 @@ func TestHumanOutputEscapesControlsFromGitConfig(t *testing.T) {
 	runGit(t, repo, "init", "--quiet")
 	runGit(t, repo, "config", "user.name", "Ada\x1b[2J")
 	runGit(t, repo, "config", "user.email", "ada@example.com")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	stdout, stderr, code := runCLI(t, "current", "--repo", repo, "--config", filepath.Join(t.TempDir(), "config.json"))
 	if code != exitOK || stderr != "" {
 		t.Fatalf("current code = %d, stderr = %q", code, stderr)
@@ -282,8 +282,8 @@ func TestDoctorDoesNotExposeSSHCommandOrEnvironmentSecrets(t *testing.T) {
 	key := filepath.Join(t.TempDir(), "key")
 	writeTestPrivateKey(t, key, 0o600)
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	if _, stderr, code := runCLI(t, "add", "personal", "--name", "Ada", "--email", "ada@example.com", "--ssh-key", key, "--config", configPath); code != 0 {
 		t.Fatalf("add exit code = %d: %s", code, stderr)
 	}
@@ -322,8 +322,8 @@ func TestCurrentAndDoctorRedactUnresolvedPushSelector(t *testing.T) {
 	key := filepath.Join(t.TempDir(), "key")
 	writeTestPrivateKey(t, key, 0o600)
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	if _, stderr, code := runCLI(t, "add", "personal", "--name", "Ada", "--email", "ada@example.com", "--ssh-key", key, "--config", configPath); code != 0 {
 		t.Fatalf("add exit code = %d: %s", code, stderr)
 	}
@@ -442,8 +442,8 @@ func TestTwoRepositoriesRemainIndependent(t *testing.T) {
 	runGit(t, workRepo, "init", "--quiet")
 	runGit(t, personalRepo, "init", "--quiet")
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 
 	for _, item := range []struct {
 		profile string
@@ -482,7 +482,7 @@ func TestAutomaticDirectoryRulePreservesGlobalIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	runGit(t, root, "config", "--global", "user.name", "Work User")
 	runGit(t, root, "config", "--global", "user.email", "work@example.com")
 	runGit(t, repo, "init", "--quiet")
@@ -554,7 +554,7 @@ func TestAutomaticRuleSurvivesConfigRelocationWithoutLeavingStaleIdentity(t *tes
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	runGit(t, root, "config", "--global", "user.name", "Work User")
 	runGit(t, root, "config", "--global", "user.email", "work@example.com")
 	runGit(t, repo, "init", "--quiet")
@@ -611,7 +611,7 @@ func TestAutomaticRuleCanBeRemovedAfterCaseOnlyDirectoryRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	runGit(t, root, "config", "--global", "user.name", "Work User")
 	runGit(t, root, "config", "--global", "user.email", "work@example.com")
 	runGit(t, repo, "init", "--quiet")
@@ -645,7 +645,7 @@ func TestCurrentAndDoctorDetectInactiveAutomaticRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	runGit(t, root, "config", "--global", "user.name", "Work User")
 	runGit(t, root, "config", "--global", "user.email", "work@example.com")
 	runGit(t, repo, "init", "--quiet")
@@ -698,8 +698,8 @@ func TestDoctorChecksOriginPushURL(t *testing.T) {
 	key := filepath.Join(t.TempDir(), "id_ed25519")
 	writeTestPrivateKey(t, key, 0o600)
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 
 	if _, stderr, code := runCLI(t, "add", "personal", "--name", "Ada", "--email", "ada@example.com", "--ssh-key", key, "--config", configPath); code != 0 {
 		t.Fatalf("add exit code = %d: %s", code, stderr)
@@ -752,8 +752,8 @@ func TestExplicitEmptyPushSelectorFailsClosed(t *testing.T) {
 	key := filepath.Join(t.TempDir(), "id_ed25519")
 	writeTestPrivateKey(t, key, 0o600)
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 
 	if _, stderr, code := runCLI(t, "add", "personal", "--name", "Ada", "--email", "ada@example.com", "--ssh-key", key, "--config", configPath); code != 0 {
 		t.Fatalf("add exit code = %d: %s", code, stderr)
@@ -792,8 +792,8 @@ func TestMalformedSSHRemoteFailsClosed(t *testing.T) {
 	key := filepath.Join(t.TempDir(), "id_ed25519")
 	writeTestPrivateKey(t, key, 0o600)
 	configPath := filepath.Join(t.TempDir(), "config.json")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	if _, stderr, code := runCLI(t, "add", "personal", "--name", "Ada", "--email", "ada@example.com", "--ssh-key", key, "--config", configPath); code != 0 {
 		t.Fatalf("add exit code = %d: %s", code, stderr)
 	}
@@ -833,7 +833,7 @@ func TestAutomaticRuleRequiresExplicitUseForSSHAndSigning(t *testing.T) {
 	key := filepath.Join(root, "id_ed25519")
 	writeTestPrivateKey(t, key, 0o600)
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	runGit(t, repo, "init", "--quiet")
 	runGit(t, repo, "remote", "add", "origin", "git@github.com:ada/project.git")
 
@@ -961,7 +961,7 @@ func TestGlobalProfileMarkerIsNotClassifiedAsAutomatic(t *testing.T) {
 	globalConfig := filepath.Join(root, "global.gitconfig")
 	configPath := filepath.Join(root, "gitctx", "config.json")
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	runGit(t, repo, "init", "--quiet")
 	if _, stderr, code := runCLI(t, "add", "personal", "--name", "Ada", "--email", "ada@example.com", "--config", configPath); code != 0 {
 		t.Fatalf("add exit code = %d: %s", code, stderr)
@@ -1015,7 +1015,7 @@ func TestAutoGenerationMismatchIsDetectedAndSyncRepairsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	runGit(t, repo, "init", "--quiet")
 	if _, stderr, code := runCLI(t, "add", "personal", "--name", "Ada", "--email", "ada@example.com", "--config", configPath); code != 0 {
 		t.Fatalf("add exit code = %d: %s", code, stderr)
@@ -1068,8 +1068,9 @@ func TestEmptyConfigValueAndRootAutoRuleAreRejected(t *testing.T) {
 	if _, stderr, code := runCLI(t, "current", "--repo", "", "--config", filepath.Join(t.TempDir(), "config.json")); code != exitUsage || !strings.Contains(stderr, "--repo requires a non-empty path") {
 		t.Fatalf("empty --repo exit code = %d, stderr = %q", code, stderr)
 	}
-	if _, err := canonicalDirectory(string(filepath.Separator)); err == nil {
-		t.Fatal("canonicalDirectory(filesystem root) error = nil")
+	filesystemRoot := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
+	if _, err := canonicalDirectory(filesystemRoot); err == nil || !strings.Contains(err.Error(), "filesystem root") {
+		t.Fatalf("canonicalDirectory(filesystem root) error = %v", err)
 	}
 	for _, args := range [][]string{{"auto", "--force"}, {"auto", "list", "--force"}, {"auto", "sync", "--force"}, {"auto", "remove", "/tmp/example", "--force"}} {
 		args = append(args, "--config", filepath.Join(t.TempDir(), "config.json"))
@@ -1082,7 +1083,7 @@ func TestEmptyConfigValueAndRootAutoRuleAreRejected(t *testing.T) {
 func TestAutoListJSONWorksBeforeConfigDirectoryExists(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(root, "global.gitconfig"))
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	configPath := filepath.Join(root, "missing", "nested", "config.json")
 	stdout, stderr, code := runCLI(t, "auto", "list", "--json", "--config", configPath)
 	if code != exitOK || stderr != "" {
@@ -1103,7 +1104,7 @@ func TestAutoListJSONWorksBeforeConfigDirectoryExists(t *testing.T) {
 func TestAutoListWarnsWhenSavedAndActiveRulesDiffer(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(root, "global.gitconfig"))
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	configPath := filepath.Join(root, "store", "config.json")
 	directory := filepath.Join(root, "personal")
 	if _, stderr, code := runCLI(t, "add", "personal", "--name", "Ada", "--email", "ada@example.com", "--config", configPath); code != exitOK {

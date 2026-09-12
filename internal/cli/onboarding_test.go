@@ -227,8 +227,8 @@ func TestHelpTopicAndEmptyListPreferGuidedSetup(t *testing.T) {
 func TestCurrentLabelsSynthesizedGitIdentityAsUnconfigured(t *testing.T) {
 	repo := t.TempDir()
 	runGit(t, repo, "init", "--quiet")
-	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
-	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
 	t.Setenv("HOME", t.TempDir())
 	configPath := filepath.Join(t.TempDir(), "profiles.json")
 	var stdout bytes.Buffer

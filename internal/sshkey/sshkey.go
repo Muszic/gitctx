@@ -258,7 +258,7 @@ func prepareDestination(path string) (string, error) {
 	if err := checkOwnedByCurrentUser(parent, info); err != nil {
 		return "", err
 	}
-	if info.Mode().Perm()&0o022 != 0 {
+	if posixPermissionChecks && info.Mode().Perm()&0o022 != 0 {
 		return "", fmt.Errorf("SSH key directory %s has permissions %04o; it must not be writable by group or others", parent, info.Mode().Perm())
 	}
 	canonicalParent, err := filepath.EvalSymlinks(parent)
@@ -294,7 +294,7 @@ func inspectPair(privatePath string, runner executor) (Pair, error) {
 	if err := checkOwnedByCurrentUser(publicPath, publicInfo); err != nil {
 		return Pair{}, err
 	}
-	if publicInfo.Mode().Perm()&0o022 != 0 {
+	if posixPermissionChecks && publicInfo.Mode().Perm()&0o022 != 0 {
 		return Pair{}, fmt.Errorf("public key %s has permissions %04o; it must not be writable by group or others", publicPath, publicInfo.Mode().Perm())
 	}
 
@@ -357,7 +357,7 @@ func validatePrivateFile(path string, info os.FileInfo) error {
 	if err := checkOwnedByCurrentUser(path, info); err != nil {
 		return err
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if posixPermissionChecks && info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("private key %s has permissions %04o; it must not be accessible by group or others", path, info.Mode().Perm())
 	}
 	file, err := os.Open(path)
@@ -477,25 +477,15 @@ func removeIfSameFile(path, expectedPath string) error {
 }
 
 func syncFile(path string) error {
-	file, err := os.Open(path)
+	// FlushFileBuffers requires a write-capable handle on Windows. These are
+	// newly generated staging files and were made owner-writable just above.
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("open generated SSH key for sync: %w", err)
 	}
 	defer file.Close()
 	if err := file.Sync(); err != nil {
 		return fmt.Errorf("sync generated SSH key: %w", err)
-	}
-	return nil
-}
-
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open SSH key directory for sync: %w", err)
-	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil {
-		return fmt.Errorf("sync SSH key directory: %w", err)
 	}
 	return nil
 }

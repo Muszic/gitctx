@@ -95,7 +95,7 @@ func TestApplyDisablesCommitSigningLocallyAndRestoresInheritance(t *testing.T) {
 	if output, err := keygen.CombinedOutput(); err != nil {
 		t.Fatalf("generate work signing key: %v: %s", err, output)
 	}
-	client := &Client{Env: append(os.Environ(), "GIT_CONFIG_GLOBAL="+globalPath, "GIT_CONFIG_SYSTEM=/dev/null")}
+	client := &Client{Env: append(os.Environ(), "GIT_CONFIG_GLOBAL="+globalPath, "GIT_CONFIG_SYSTEM="+os.DevNull)}
 	if _, err := client.run(repo, "config", "--global", "commit.gpgSign", "true"); err != nil {
 		t.Fatalf("set global signing policy: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestApplyManagedValuePreservesDeletedOrChangedValueWhenRelinquishing(t *tes
 func TestInspectRequiresRepositoryLocalIdentityAndManagedSSHScope(t *testing.T) {
 	repo := initRepository(t)
 	globalPath := filepath.Join(t.TempDir(), "global.gitconfig")
-	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+globalPath, "GIT_CONFIG_SYSTEM=/dev/null")
+	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+globalPath, "GIT_CONFIG_SYSTEM="+os.DevNull)
 	client := &Client{Env: env}
 	key := filepath.Join(t.TempDir(), "key")
 	writeTestPrivateKey(t, key, 0o600)
@@ -871,7 +871,7 @@ func initRepository(t *testing.T) string {
 
 func isolatedGitEnvironment() []string {
 	env := os.Environ()
-	env = append(env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	env = append(env, "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_SYSTEM="+os.DevNull)
 	return env
 }
 

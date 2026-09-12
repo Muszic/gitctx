@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -13,12 +14,13 @@ import (
 
 func TestSaveAndLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "config.json")
+	rulePath := filepath.Join(t.TempDir(), "code", "personal")
 	store := Store{Path: path}
 	want := profile.Profile{GitName: "Ada Lovelace", GitEmail: "ada@example.com", GitHubUser: "ada"}
 
 	if err := store.Save(Config{
 		Profiles: map[string]profile.Profile{"personal": want},
-		Rules:    map[string]string{"/code/personal": "personal"},
+		Rules:    map[string]string{rulePath: "personal"},
 	}); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
@@ -29,15 +31,15 @@ func TestSaveAndLoad(t *testing.T) {
 	if got.Profiles["personal"] != want {
 		t.Fatalf("Load() profile = %#v, want %#v", got.Profiles["personal"], want)
 	}
-	if got.Rules["/code/personal"] != "personal" {
-		t.Fatalf("Load() rule = %q, want personal", got.Rules["/code/personal"])
+	if got.Rules[rulePath] != "personal" {
+		t.Fatalf("Load() rule = %q, want personal", got.Rules[rulePath])
 	}
 
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat() error = %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("config permissions = %o, want 600", info.Mode().Perm())
 	}
 }
@@ -67,12 +69,13 @@ func TestSaveNormalizesProfileMetadata(t *testing.T) {
 
 func TestLoadRejectsFilesystemRootRule(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
+	filesystemRoot := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
 	data, err := json.Marshal(Config{
 		SchemaVersion: currentSchemaVersion,
 		Profiles: map[string]profile.Profile{
 			"personal": {GitName: "Ada", GitEmail: "ada@example.com"},
 		},
-		Rules: map[string]string{string(filepath.Separator): "personal"},
+		Rules: map[string]string{filesystemRoot: "personal"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -80,8 +83,8 @@ func TestLoadRejectsFilesystemRootRule(t *testing.T) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (Store{Path: path}).Load(); err == nil {
-		t.Fatal("Load() error = nil, want filesystem-root rejection")
+	if _, err := (Store{Path: path}).Load(); err == nil || !strings.Contains(err.Error(), "filesystem root") {
+		t.Fatalf("Load() error = %v, want filesystem-root rejection", err)
 	}
 }
 
@@ -91,7 +94,7 @@ func TestSaveRejectsRulePathWithGitPatternMetacharacters(t *testing.T) {
 		Profiles: map[string]profile.Profile{
 			"personal": {GitName: "Ada", GitEmail: "ada@example.com"},
 		},
-		Rules: map[string]string{filepath.Join(string(filepath.Separator), "code", "personal*"): "personal"},
+		Rules: map[string]string{filepath.Join(filepath.Dir(path), "code", "personal*"): "personal"},
 	}
 	if err := (Store{Path: path}).Save(config); err == nil || !strings.Contains(err.Error(), "pattern metacharacters") {
 		t.Fatalf("Save() error = %v, want pattern-metacharacter rejection", err)
@@ -102,7 +105,7 @@ func TestSaveRejectsRulePathWithControlCharacter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	config := Config{
 		Profiles: map[string]profile.Profile{"personal": {GitName: "Ada", GitEmail: "ada@example.com"}},
-		Rules:    map[string]string{filepath.Join(string(filepath.Separator), "code", "personal\x1b[2J"): "personal"},
+		Rules:    map[string]string{filepath.Join(filepath.Dir(path), "code", "personal\x1b[2J"): "personal"},
 	}
 	if err := (Store{Path: path}).Save(config); err == nil || !strings.Contains(err.Error(), "control characters") {
 		t.Fatalf("Save() error = %v, want control-character rejection", err)

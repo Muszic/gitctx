@@ -23,7 +23,7 @@ func TestSyncAppliesDirectoryRuleWithoutChangingGlobalIdentity(t *testing.T) {
 	if err := os.MkdirAll(repo, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM=/dev/null")
+	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM="+os.DevNull)
 	runGit(t, env, root, "config", "--global", "user.name", "Work User")
 	runGit(t, env, root, "config", "--global", "user.email", "work@example.com")
 	runGit(t, env, root, "config", "--file", unrelatedInclude, "color.ui", "always")
@@ -125,7 +125,7 @@ func TestNestedRuleOverridesParentRule(t *testing.T) {
 	if err := os.MkdirAll(repo, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM=/dev/null")
+	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM="+os.DevNull)
 	runGit(t, env, root, "init", "--quiet", repo)
 
 	manager := &Manager{ConfigPath: configPath, Env: env}
@@ -157,7 +157,7 @@ func TestAutomaticRuleDoesNotFollowLinkedWorktreeMetadata(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(linkedRepo), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM=/dev/null")
+	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM="+os.DevNull)
 	runGit(t, env, root, "config", "--global", "user.name", "Work User")
 	runGit(t, env, root, "config", "--global", "user.email", "work@example.com")
 	runGit(t, env, root, "init", "--quiet", mainRepo)
@@ -197,7 +197,7 @@ func TestAutomaticRulesIgnoreBareAndSeparateGitDirectories(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(outsideRepo), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM=/dev/null")
+	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM="+os.DevNull)
 	runGit(t, env, root, "config", "--global", "user.name", "Work User")
 	runGit(t, env, root, "config", "--global", "user.email", "work@example.com")
 	runGit(t, env, root, "init", "--quiet", "--bare", bareRepo)
@@ -276,7 +276,7 @@ func TestSiblingProfileStoresCannotClobberAutomaticRules(t *testing.T) {
 	if err := os.MkdirAll(firstRepo, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM=/dev/null")
+	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM="+os.DevNull)
 	runGit(t, env, root, "config", "--global", "user.name", "Work User")
 	runGit(t, env, root, "config", "--global", "user.email", "work@example.com")
 	runGit(t, env, root, "init", "--quiet", firstRepo)
@@ -305,7 +305,7 @@ func TestSyncRejectsRelativeGlobalConfigEnvironment(t *testing.T) {
 	root := t.TempDir()
 	manager := &Manager{ConfigPath: filepath.Join(root, "store", "config.json")}
 	manager.Env = environmentWithout(os.Environ(), "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM")
-	manager.Env = append(manager.Env, "GIT_CONFIG_GLOBAL=relative.gitconfig", "GIT_CONFIG_SYSTEM=/dev/null")
+	manager.Env = append(manager.Env, "GIT_CONFIG_GLOBAL=relative.gitconfig", "GIT_CONFIG_SYSTEM="+os.DevNull)
 	config := configstore.Config{
 		Profiles: map[string]profile.Profile{"personal": {GitName: "Ada", GitEmail: "ada@example.com"}},
 		Rules:    map[string]string{filepath.Join(root, "personal"): "personal"},
@@ -321,7 +321,7 @@ func TestSyncRejectsRelativeGlobalConfigEnvironment(t *testing.T) {
 func TestDifferentStoresCannotRacePastGlobalOwnershipCheck(t *testing.T) {
 	root := t.TempDir()
 	global := filepath.Join(root, "global.gitconfig")
-	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM=/dev/null")
+	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM="+os.DevNull)
 	managers := []*Manager{
 		{ConfigPath: filepath.Join(root, "one", "config.json"), Env: env},
 		{ConfigPath: filepath.Join(root, "two", "config.json"), Env: env},
@@ -367,7 +367,7 @@ func TestSyncCleansOnlyOwnedAbandonedStages(t *testing.T) {
 	global := filepath.Join(root, "global.gitconfig")
 	configPath := filepath.Join(root, "store", "config.json")
 	personalDir := filepath.Join(root, "personal")
-	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM=/dev/null")
+	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM="+os.DevNull)
 	manager := &Manager{ConfigPath: configPath, Env: env}
 	config := configstore.Config{
 		Profiles: map[string]profile.Profile{"personal": {GitName: "Ada", GitEmail: "ada@example.com"}},
@@ -411,7 +411,7 @@ func TestManifestMatchesConfigChecksEveryGeneratedFile(t *testing.T) {
 	global := filepath.Join(root, "global.gitconfig")
 	manager := &Manager{
 		ConfigPath: filepath.Join(root, "store", "config.json"),
-		Env:        append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM=/dev/null"),
+		Env:        append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM="+os.DevNull),
 	}
 	config := configstore.Config{
 		Profiles: map[string]profile.Profile{"personal": {GitName: "Ada", GitEmail: "ada@example.com"}},
@@ -530,7 +530,7 @@ func TestSyncMovesManagedIncludeAfterLaterGlobalIdentity(t *testing.T) {
 	if err := os.MkdirAll(repo, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM=/dev/null")
+	env := append(os.Environ(), "GIT_CONFIG_GLOBAL="+global, "GIT_CONFIG_SYSTEM="+os.DevNull)
 	runGit(t, env, root, "init", "--quiet", repo)
 	manager := &Manager{ConfigPath: configPath, Env: env}
 	config := configstore.Config{
@@ -568,12 +568,13 @@ func TestProfileFilenamesRemainDistinctIgnoringCase(t *testing.T) {
 
 func TestSyncRejectsFilesystemRootRule(t *testing.T) {
 	manager := NewManager(filepath.Join(t.TempDir(), "config.json"))
-	manager.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(t.TempDir(), "global.gitconfig"), "GIT_CONFIG_SYSTEM=/dev/null")
+	manager.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+filepath.Join(t.TempDir(), "global.gitconfig"), "GIT_CONFIG_SYSTEM="+os.DevNull)
+	filesystemRoot := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
 	config := configstore.Config{
 		Profiles: map[string]profile.Profile{
 			"personal": {GitName: "Ada", GitEmail: "ada@example.com"},
 		},
-		Rules: map[string]string{string(filepath.Separator): "personal"},
+		Rules: map[string]string{filesystemRoot: "personal"},
 	}
 	if _, err := manager.Sync(config); err == nil || !strings.Contains(err.Error(), "filesystem root") {
 		t.Fatalf("Sync() error = %v, want filesystem-root rejection", err)

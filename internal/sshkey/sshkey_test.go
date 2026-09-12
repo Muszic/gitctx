@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -86,8 +87,10 @@ func TestGeneratePublishesValidatedPairWithoutClobber(t *testing.T) {
 			}
 		}
 	}
-	assertMode(t, pair.PrivatePath, 0o600)
-	assertMode(t, pair.PublicPath, 0o644)
+	if runtime.GOOS != "windows" {
+		assertMode(t, pair.PrivatePath, 0o600)
+		assertMode(t, pair.PublicPath, 0o644)
+	}
 	entries, err := os.ReadDir(filepath.Dir(pair.PrivatePath))
 	if err != nil {
 		t.Fatal(err)
@@ -100,22 +103,23 @@ func TestGeneratePublishesValidatedPairWithoutClobber(t *testing.T) {
 }
 
 func TestGenerateRejectsEveryExistingTargetKindBeforeExecution(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symbolic-link creation is not generally available to unprivileged Windows tests")
-	}
 	tests := []struct {
-		name       string
-		makeTarget func(*testing.T, string)
+		name            string
+		requiresSymlink bool
+		makeTarget      func(*testing.T, string)
 	}{
-		{"private file", func(t *testing.T, path string) { mustWrite(t, path, "private-original", 0o600) }},
-		{"public file", func(t *testing.T, path string) { mustWrite(t, path+".pub", "public-original", 0o644) }},
-		{"private directory", func(t *testing.T, path string) { mustMkdir(t, path) }},
-		{"public directory", func(t *testing.T, path string) { mustMkdir(t, path+".pub") }},
-		{"private dangling symlink", func(t *testing.T, path string) { mustSymlink(t, "missing", path) }},
-		{"public dangling symlink", func(t *testing.T, path string) { mustSymlink(t, "missing", path+".pub") }},
+		{"private file", false, func(t *testing.T, path string) { mustWrite(t, path, "private-original", 0o600) }},
+		{"public file", false, func(t *testing.T, path string) { mustWrite(t, path+".pub", "public-original", 0o644) }},
+		{"private directory", false, func(t *testing.T, path string) { mustMkdir(t, path) }},
+		{"public directory", false, func(t *testing.T, path string) { mustMkdir(t, path+".pub") }},
+		{"private dangling symlink", true, func(t *testing.T, path string) { mustSymlink(t, "missing", path) }},
+		{"public dangling symlink", true, func(t *testing.T, path string) { mustSymlink(t, "missing", path+".pub") }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" && test.requiresSymlink {
+				t.Skip("symbolic-link creation is not generally available to unprivileged Windows tests")
+			}
 			destination := filepath.Join(t.TempDir(), "key")
 			test.makeTarget(t, destination)
 			var calls atomic.Int32
@@ -206,6 +210,11 @@ func TestGenerateSerializesSameDestination(t *testing.T) {
 	destination := filepath.Join(t.TempDir(), "key")
 	started := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFirst := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	t.Cleanup(releaseFirst)
 	firstRunner := fakeExecutor{run: func(args []string, _ io.Reader, _, _ io.Writer) error {
 		close(started)
 		<-release
@@ -228,7 +237,13 @@ func TestGenerateSerializesSameDestination(t *testing.T) {
 		pair, err := generate("personal", destination, nil, io.Discard, io.Discard, firstRunner)
 		firstResult <- result{pair, err}
 	}()
-	<-started
+	select {
+	case <-started:
+	case early := <-firstResult:
+		t.Fatalf("first Generate() returned before ssh-keygen started: %v", early.err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("first Generate() did not reach ssh-keygen within 5 seconds")
+	}
 	go func() {
 		pair, err := generate("personal", destination, nil, io.Discard, io.Discard, secondRunner)
 		secondResult <- result{pair, err}
@@ -237,12 +252,22 @@ func TestGenerateSerializesSameDestination(t *testing.T) {
 	if secondRuns.Load() != 0 {
 		t.Fatal("second ssh-keygen invocation ran before the first released its lock")
 	}
-	close(release)
-	if result := <-firstResult; result.err != nil {
-		t.Fatalf("first Generate() error = %v", result.err)
+	releaseFirst()
+	select {
+	case result := <-firstResult:
+		if result.err != nil {
+			t.Fatalf("first Generate() error = %v", result.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first Generate() did not finish within 5 seconds")
 	}
-	if result := <-secondResult; result.err == nil || !strings.Contains(result.err.Error(), "already exists") {
-		t.Fatalf("second Generate() error = %v", result.err)
+	select {
+	case result := <-secondResult:
+		if result.err == nil || !strings.Contains(result.err.Error(), "already exists") {
+			t.Fatalf("second Generate() error = %v", result.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("second Generate() did not finish within 5 seconds")
 	}
 	if secondRuns.Load() != 0 {
 		t.Fatalf("second ssh-keygen ran %d times", secondRuns.Load())
@@ -307,13 +332,15 @@ func TestInspectPairRejectsMissingUnsafeOrMismatchedPublicKey(t *testing.T) {
 			}
 		})
 	}
-	t.Run("loose private permissions", func(t *testing.T) {
-		private := filepath.Join(t.TempDir(), "key")
-		writeFakePair(t, private, 0o644, 0o644)
-		if _, err := inspectPair(private, fakeExecutor{}); err == nil || !strings.Contains(err.Error(), "permissions") {
-			t.Fatalf("InspectPair() error = %v", err)
-		}
-	})
+	if runtime.GOOS != "windows" {
+		t.Run("loose private permissions", func(t *testing.T) {
+			private := filepath.Join(t.TempDir(), "key")
+			writeFakePair(t, private, 0o644, 0o644)
+			if _, err := inspectPair(private, fakeExecutor{}); err == nil || !strings.Contains(err.Error(), "permissions") {
+				t.Fatalf("InspectPair() error = %v", err)
+			}
+		})
+	}
 }
 
 func TestInspectPairWithRealSSHKeygen(t *testing.T) {
