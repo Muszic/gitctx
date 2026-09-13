@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"gitctx/internal/configstore"
+	"gitctx/internal/gitconfig"
 	"gitctx/internal/sshkey"
 )
 
@@ -187,8 +188,12 @@ func TestSetupExistingSSHKeyAppliesAuthenticationAndSameKeySigning(t *testing.T)
 		t.Fatalf("local ssh.variant = %q, want ssh", got)
 	}
 	sshCommand := gitValue(t, repo, "core.sshCommand")
-	if !strings.Contains(sshCommand, keyPath) || !strings.Contains(sshCommand, "IdentitiesOnly=yes") {
-		t.Fatalf("local core.sshCommand = %q, want isolated key %q", sshCommand, keyPath)
+	wantSSHCommand, err := gitconfig.ExpectedSSHCommand(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sshCommand != wantSSHCommand {
+		t.Fatalf("local core.sshCommand = %q, want %q", sshCommand, wantSSHCommand)
 	}
 
 	stdout, stderr, code = runCLI(t,
@@ -802,6 +807,10 @@ func TestSetupPinsResolvedRepositoryAcrossConfirmation(t *testing.T) {
 	if err := os.Symlink(repoA, repoLink); err != nil {
 		t.Skipf("create repository symlink: %v", err)
 	}
+	resolvedRepo, err := gitconfig.NewClient().RepoRoot(repoLink)
+	if err != nil {
+		t.Fatal(err)
+	}
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	input := &setupTriggerReader{
 		reader: strings.NewReader("yes\n"),
@@ -823,8 +832,8 @@ func TestSetupPinsResolvedRepositoryAcrossConfirmation(t *testing.T) {
 	if code != exitOK || stderr.String() != "" {
 		t.Fatalf("setup code = %d, stderr = %q, output = %q", code, stderr.String(), stdout.String())
 	}
-	if !strings.Contains(stdout.String(), repoA) {
-		t.Fatalf("setup output did not retain resolved repository %q: %s", repoA, stdout.String())
+	if !strings.Contains(stdout.String(), resolvedRepo) {
+		t.Fatalf("setup output did not retain resolved repository %q: %s", resolvedRepo, stdout.String())
 	}
 	if got := gitValue(t, repoA, "gitctx.profile"); got != "personal" {
 		t.Fatalf("original repository profile = %q, want personal", got)

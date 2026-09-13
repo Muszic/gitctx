@@ -42,8 +42,12 @@ func TestApplyIsRepositoryLocal(t *testing.T) {
 	if state.Profile != "personal" || state.GitName != selected.GitName || state.GitEmail != selected.GitEmail {
 		t.Fatalf("Inspect() state = %#v", state)
 	}
-	if !strings.Contains(state.SSHCommand, "IdentitiesOnly=yes") || !strings.Contains(state.SSHCommand, key) {
-		t.Fatalf("Inspect() SSH command = %q", state.SSHCommand)
+	wantSSHCommand, err := ExpectedSSHCommand(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.SSHCommand != wantSSHCommand {
+		t.Fatalf("Inspect() SSH command = %q, want %q", state.SSHCommand, wantSSHCommand)
 	}
 	if !strings.Contains(state.SSHCommand, "IdentityFile=") || strings.Contains(state.SSHCommand, " -i ") {
 		t.Fatalf("Inspect() SSH command does not suppress OpenSSH default identity files: %q", state.SSHCommand)
