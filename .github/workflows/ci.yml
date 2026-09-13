@@ -33,15 +33,19 @@ jobs:
           - os: ubuntu-latest
             go-version: 1.22.12
             label: Linux, minimum Go
+            test_timeout: 10m
           - os: ubuntu-latest
             go-version: 1.27.1
             label: Linux, current Go
+            test_timeout: 10m
           - os: macos-latest
             go-version: 1.27.1
             label: macOS, current Go
+            test_timeout: 10m
           - os: windows-latest
             go-version: 1.27.1
             label: Windows, current Go
+            test_timeout: 15m
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,7 +59,7 @@ jobs:
           cache: false
 
       - name: Run tests
-        run: go test -mod=readonly ./...
+        run: go test -mod=readonly -timeout=${{ matrix.test_timeout }} ./...
 
       - name: Build CLI
         run: go build -mod=readonly ./cmd/gitctx
