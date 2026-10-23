@@ -2,7 +2,7 @@
 
 `gitctx` keeps a repository's Git commit identity and authentication context aligned. It is designed for machines where work is the global default but personal or client repositories need their own identity.
 
-The current MVP stores profile metadata, applies profiles to repository-local Git config, supports repository-specific SSH and signing settings, and explains what it can and cannot verify. It never asks for or manages GitHub tokens or passwords; profile fields are intended only for non-secret metadata.
+The current MVP stores profile metadata, applies profiles to repository-local Git config, supports repository-specific SSH and signing settings, and explains what it can and cannot verify. It never asks you to paste GitHub tokens or passwords; optional key registration uses an existing GitHub CLI credential in memory. Profile fields contain only non-secret metadata.
 
 ## Install
 
@@ -77,7 +77,69 @@ With generated or existing SSH authentication, setup also requires an explicit s
 
 To avoid accidental cross-account key reuse, setup refuses an authentication key that matches the inherited signing key unless you intentionally pass `--allow-key-reuse`; that override is reported as a warning.
 
-For either SSH option, setup prints the public-key path, fingerprint, a platform-appropriate copy command, and account-registration links for the detected hosts. Register that public key manually with every intended Git hosting account. GitHub requires one Authentication Key entry and, when using `same-key`, a second Signing Key entry for the same public key. Other hosts may use a different signing-registration model. gitctx never uploads the key or opens a browser automatically.
+For either SSH option, setup prints the public-key path and fingerprint. In an
+interactive terminal, when all configured push URLs target github.com, setup
+offers optional registration through an existing GitHub CLI login. With no
+remote yet, a saved GitHub username enables the same offer. You can finish or
+retry this step later without generating another key:
+
+```sh
+gitctx connect personal
+```
+
+The flow asks before using GitHub CLI's current github.com credential, verifies
+the authenticated username against the profile (or the intended username you
+enter when the profile has none), and displays the public key's
+fingerprint and registration plan. It asks again before uploading the public
+key as an Authentication Key and, for same-key signing, as a Signing Key.
+Existing matching keys are reused. If only one registration succeeds, it is
+kept and the next attempt checks it rather than creating a duplicate. No remote
+keys are deleted. A different GitHub account stops the flow before any upload.
+
+GitHub CLI (`gh`) must already be installed and signed into the intended
+account. gitctx never signs in, switches gh accounts, or refreshes permissions
+automatically. If GitHub denies key permissions, review the active account and
+run this yourself to approve the additional access in GitHub:
+
+```sh
+gh auth refresh --hostname github.com --scopes write:public_key,write:ssh_signing_key
+gitctx connect personal
+```
+
+If work is the default GitHub CLI account, you can keep a separate personal
+login instead of switching that default. Choose the personal account in the
+browser when running the first command:
+
+```sh
+GITCTX_GH_DIR="$HOME/.config/gitctx/gh-personal"
+env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="$GITCTX_GH_DIR" \
+  gh auth login --hostname github.com --web --git-protocol ssh --skip-ssh-key \
+  --scopes write:public_key,write:ssh_signing_key
+env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR="$GITCTX_GH_DIR" \
+  gitctx connect personal
+```
+
+The environment override applies only to those commands; the usual work
+GitHub CLI configuration remains selected for other commands. GitHub CLI owns
+the separate login's credential storage. If its secure credential store is
+unavailable, review gh's storage warning before proceeding. Loading a personal
+key into `ssh-agent` is a separate step from this browser login.
+
+gitctx holds the credential only in memory for this operation and sends it only
+to `https://api.github.com`. It does not save it in the profile store, print it,
+or include it in subprocess arguments. The credential is pinned for the session
+so an account switch in another terminal cannot redirect an upload. Only the
+public key is uploaded; the private key remains on this computer. Registration
+does not verify remote access, organization SSO authorization, or push rights.
+Run `gitctx verify` afterward, loading a passphrase-protected key with `ssh-add`
+first if necessary. JSON setup and piped input never start registration;
+`connect` requires an interactive terminal and has no JSON upload mode.
+
+If you skip automatic registration, lack GitHub CLI, or use another Git host,
+setup shows a copy command and account-registration links for the manual flow.
+GitHub requires one Authentication Key entry and, when using `same-key`, a
+second Signing Key entry for the same public key. Other hosts may use a
+different signing-registration model. gitctx never opens a browser automatically.
 
 If a default push destination is configured, the SSH options require every push URL to use SSH. An HTTPS remote is identified before key questions; setup shows the exact SSH conversion command only when it can derive the same known-provider repository URL safely. gitctx never rewrites the remote itself.
 
@@ -141,6 +203,7 @@ Git evaluates `includeIf gitdir` against repository metadata, not the visible wo
 
 ```text
 gitctx setup <profile> [options]
+gitctx connect <profile> [--config <path>]
 gitctx add <profile> [options]
 gitctx list [--json]
 gitctx use <profile> [--repo <path>] [--json]
@@ -156,7 +219,8 @@ gitctx auto sync [--json]
 
 `status` is an alias for `current`, and running `gitctx` without arguments shows the current repository context. Within a command, options can appear before or after positional arguments; options are placed after the command name. Every command that reads or writes profiles accepts `--config <path>`; `GITCTX_CONFIG` provides the same override through the environment. Help and version output are plain text rather than JSON.
 
-Every core command supports JSON output for a future editor integration:
+Core repository/profile commands support JSON output for a future editor
+integration. The interactive `connect` upload flow is excluded:
 
 ```sh
 gitctx current --json
@@ -182,7 +246,7 @@ The config file lives in the operating system's user config directory under `git
 
 ## Scope and safety
 
-Version 0.1 supports repository isolation through local Git configuration and SSH. Its supported targets are macOS and Linux, and it requires Git 2.30 or newer plus `ssh-keygen` when SSH profiles are used. Windows builds are experimental because Windows ACL protection and atomic file-replacement behavior are not yet verified. For strict key isolation, an applied SSH profile ignores user and system SSH config; use a fully qualified host in the Git remote rather than an SSH `Host` alias, and note that custom proxy and port settings are not inherited. Unix file modes are checked for private-key exposure. Literal `${` is rejected in SSH-key paths because OpenSSH may treat it as environment-variable syntax. It does not perform browser login, manage credentials, rewrite remotes, or switch the machine-wide active `gh` account. Offline checks validate a resolvable named default push remote; `verify` is the explicit live connectivity check. Direct URL selectors are reported as unverifiable, and an explicitly supplied destination such as `git push other-remote` is outside that check. The optional `auto` feature changes global Git config only through its generated include and short-lived staging section; unrelated includes and global identity values are preserved.
+Version 0.1 supports repository isolation through local Git configuration and SSH. Its supported targets are macOS and Linux, and it requires Git 2.30 or newer plus `ssh-keygen` when SSH profiles are used. Windows builds are experimental because Windows ACL protection and atomic file-replacement behavior are not yet verified. For strict key isolation, an applied SSH profile ignores user and system SSH config; use a fully qualified host in the Git remote rather than an SSH `Host` alias, and note that custom proxy and port settings are not inherited. Unix file modes are checked for private-key exposure. Literal `${` is rejected in SSH-key paths because OpenSSH may treat it as environment-variable syntax. It does not perform browser login, persist login credentials, rewrite remotes, or switch the machine-wide active `gh` account. Offline checks validate a resolvable named default push remote; `verify` is the explicit live connectivity check. Direct URL selectors are reported as unverifiable, and an explicitly supplied destination such as `git push other-remote` is outside that check. The optional `auto` feature changes global Git config only through its generated include and short-lived staging section; unrelated includes and global identity values are preserved.
 
 gitctx trusts the `git`, `ssh`, and initial `ssh-keygen` executables resolved from the environment in which it runs, just as Git and OpenSSH normally do. Run setup and profile application from a trusted shell with a trusted `PATH`. The signing-program integrity marker detects replacement after gitctx selects the executable; it cannot prove that an executable was benign before that initial selection.
 
@@ -192,7 +256,9 @@ Only one profile store's automatic rules may be active at a time. Disable the fi
 
 The MVP uses small lock files while changing its profile store or repository settings. If a process is force-quit or interrupted during a mutation, a later command may time out and print the exact leftover lock path. After confirming that no `gitctx` process is running, remove only that reported lock file and retry.
 
-Guided browser login, automatic key upload, remote rewriting, hooks, and the VS Code extension are later milestones. The versioned JSON output is the intended integration surface for that extension.
+Native browser login, automatic registration without GitHub CLI, remote
+rewriting, hooks, and the VS Code extension are later milestones. The versioned
+JSON output is the intended integration surface for that extension.
 
 ## Automated checks
 

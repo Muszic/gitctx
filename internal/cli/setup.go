@@ -138,7 +138,13 @@ func (a application) setup(args []string) int {
 					return a.fail(exitGit, code, remoteErr, hint)
 				}
 			}
-			return a.use([]string{options.profile, "--repo", repository})
+			code := a.use([]string{options.profile, "--repo", repository})
+			if code == exitOK {
+				if _, registrationErr := a.offerKeyRegistration(options.profile, beforeProfile, preflight); registrationErr != nil {
+					return a.fail(exitUnsafe, "key_registration_failed", registrationErr, "Local setup was kept. Retry with 'gitctx connect <profile>' or register the public key manually.")
+				}
+			}
+			return code
 		}
 		options.force = true
 		interactive = true
@@ -161,7 +167,7 @@ func (a application) setup(args []string) int {
 			}
 		}
 		if interactive && !options.githubSet {
-			options.github, err = a.promptValidatedSetupValue("GitHub username (optional; used for guidance, not login)", beforeProfile.GitHubUser, false, validateSetupGitHubUser)
+			options.github, err = a.promptValidatedSetupValue("GitHub username (optional; confirms the key-registration account)", beforeProfile.GitHubUser, false, validateSetupGitHubUser)
 			if err != nil {
 				return a.fail(exitUsage, "setup_cancelled", err, "Nothing was changed.")
 			}
@@ -505,7 +511,18 @@ func (a application) setup(args []string) int {
 		fmt.Fprintf(a.out, "  Note        %s\n", escapeDisplayControls(warning.Message))
 	}
 	if pair.PublicPath != "" {
-		printKeyRegistrationSteps(a.out, selected, pair.PublicPath, state)
+		connected := false
+		if diagnosis.Status != "error" {
+			var registrationErr error
+			connected, registrationErr = a.offerKeyRegistration(options.profile, selected, state)
+			if registrationErr != nil {
+				printKeyRegistrationSteps(a.out, selected, pair.PublicPath, state)
+				return a.fail(exitUnsafe, "key_registration_failed", registrationErr, "Local setup was kept. Retry with 'gitctx connect <profile>' or register the public key manually.")
+			}
+		}
+		if !connected {
+			printKeyRegistrationSteps(a.out, selected, pair.PublicPath, state)
+		}
 	} else {
 		fmt.Fprintln(a.out, "\nReady to commit with this identity. Pushes may still use credentials managed outside gitctx.")
 	}
@@ -1159,12 +1176,14 @@ SSH authentication and signing are configured only for the selected repository.
 Global work identity and signing defaults are not changed. Existing automatic
 identity rules for an edited profile are shown and synchronized. After
 registering an SSH public key with the hosting account, run 'gitctx verify' for
-a read-only connection check.
+a read-only connection check. Interactive GitHub setup offers public-key
+registration using an existing GitHub CLI login. Retry it later with
+'gitctx connect <profile>'. JSON setup never uploads keys.
 
 Options:
   --name <name>          Git commit author name
   --email <email>        Git commit author email
-  --github <username>    GitHub username metadata
+  --github <username>    Expected GitHub account for key registration
   --clear-github         Remove saved GitHub username metadata
   --repo <path>          Repository to configure (default: current directory)
   --auth <mode>          generate, existing, or identity-only

@@ -3,6 +3,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,7 +127,7 @@ func doesNotNeedConfig(args []string) bool {
 	switch args[0] {
 	case "help", "-h", "--help", "version", "-v", "--version":
 		return true
-	case "setup", "add", "list", "profiles", "use", "current", "status", "doctor", "verify", "fix", "auto":
+	case "setup", "connect", "add", "list", "profiles", "use", "current", "status", "doctor", "verify", "fix", "auto":
 		// These commands may need the profile store unless effective help is true.
 	default:
 		// Unknown commands can report usage without resolving user configuration.
@@ -170,6 +171,7 @@ type application struct {
 	legacyConfigPaths []string
 	json              bool
 	command           string
+	openRegistration  func(context.Context) (registrationSession, error)
 }
 
 type envelope struct {
@@ -216,6 +218,8 @@ func (a application) run(args []string) int {
 		return a.add(args[1:])
 	case "setup":
 		return a.setup(args[1:])
+	case "connect":
+		return a.connect(args[1:])
 	case "list", "profiles":
 		a.command = "list"
 		return a.list(args[1:])
@@ -2096,21 +2100,22 @@ Usage:
   gitctx <command> [options]
 
 Commands:
-  setup <profile>  Guided first-time setup for one repository
-  add <profile>    Create a profile with non-secret identity metadata
-  list             List saved profiles
-  use <profile>    Apply a profile to one repository
-  current          Show the effective repository identity (alias: status)
-  doctor           Check identity and authentication configuration
-  verify           Test the profile key against the push remote (read-only)
-  fix              Re-apply the repository's selected profile
-  auto              Manage automatic directory-to-profile rules
-  version           Show the current version
-  help              Show this help
+  setup <profile>    Guided first-time setup for one repository
+  connect <profile>  Register its public key with GitHub using GitHub CLI
+  add <profile>      Create a profile with non-secret identity metadata
+  list               List saved profiles
+  use <profile>      Apply a profile to one repository
+  current            Show the effective repository identity (alias: status)
+  doctor             Check identity and authentication configuration
+  verify             Test the profile key against the push remote (read-only)
+  fix                Re-apply the repository's selected profile
+  auto               Manage automatic directory-to-profile rules
+  version            Show the current version
+  help               Show this help
 
 Core command options (place after the command):
   --config <path>  Use an explicit profile store
-  --json           Emit a stable machine-readable response
+  --json           Emit a stable machine-readable response (except connect)
 
 Help and version output are always plain text. Run 'gitctx <command> --help' for command options.`)
 }
