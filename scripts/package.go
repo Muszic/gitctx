@@ -19,6 +19,13 @@ import (
 
 var archiveTime = time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
 
+type archiveEntry struct {
+	name string
+	file *os.File
+	info os.FileInfo
+	mode int64
+}
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintf(os.Stderr, "package release: %v\n", err)
@@ -31,6 +38,7 @@ func run(args []string) error {
 	flags.SetOutput(io.Discard)
 	source := flags.String("source", "", "binary to archive")
 	name := flags.String("name", "", "binary name inside the archive")
+	license := flags.String("license", "", "optional license file included as LICENSE")
 	output := flags.String("output", "", "archive destination")
 	format := flags.String("format", "", "archive format: tar.gz or zip")
 	if err := flags.Parse(args); err != nil {
@@ -44,15 +52,7 @@ func run(args []string) error {
 		return errors.New("archive entry name must be a base name")
 	}
 
-	info, err := os.Lstat(*source)
-	if err != nil {
-		return fmt.Errorf("inspect source: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return errors.New("archive source must be a regular file")
-	}
-
-	var create func(io.Writer, *os.File, os.FileInfo, string) error
+	var create func(io.Writer, []archiveEntry) error
 	switch *format {
 	case "tar.gz":
 		create = createTarGzip
@@ -62,15 +62,47 @@ func run(args []string) error {
 		return fmt.Errorf("unsupported archive format %q", *format)
 	}
 
-	in, err := os.Open(*source)
+	binary, err := openEntry(*source, *name, 0o755)
 	if err != nil {
-		return fmt.Errorf("open source: %w", err)
+		return err
 	}
-	defer in.Close()
+	defer binary.file.Close()
+	entries := []archiveEntry{binary}
+	if *license != "" {
+		if *name == "LICENSE" {
+			return errors.New("binary name conflicts with the license entry")
+		}
+		notice, err := openEntry(*license, "LICENSE", 0o644)
+		if err != nil {
+			return err
+		}
+		defer notice.file.Close()
+		entries = append(entries, notice)
+	}
 
 	return writeOutput(*output, func(out io.Writer) error {
-		return create(out, in, info, *name)
+		return create(out, entries)
 	})
+}
+
+func openEntry(path, name string, mode int64) (archiveEntry, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return archiveEntry{}, fmt.Errorf("inspect archive source: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return archiveEntry{}, errors.New("archive source must be a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return archiveEntry{}, fmt.Errorf("open archive source: %w", err)
+	}
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		file.Close()
+		return archiveEntry{}, errors.New("archive source changed while opening")
+	}
+	return archiveEntry{name: name, file: file, info: opened, mode: mode}, nil
 }
 
 func writeOutput(output string, write func(io.Writer) error) (err error) {
@@ -101,7 +133,7 @@ func writeOutput(output string, write func(io.Writer) error) (err error) {
 	return nil
 }
 
-func createTarGzip(dst io.Writer, src *os.File, info os.FileInfo, name string) error {
+func createTarGzip(dst io.Writer, entries []archiveEntry) error {
 	gz, err := gzip.NewWriterLevel(dst, gzip.BestCompression)
 	if err != nil {
 		return fmt.Errorf("create gzip writer: %w", err)
@@ -110,21 +142,23 @@ func createTarGzip(dst io.Writer, src *os.File, info os.FileInfo, name string) e
 	gz.Header.OS = 255
 
 	tw := tar.NewWriter(gz)
-	header := &tar.Header{
-		Name:     name,
-		Mode:     0o755,
-		Uid:      0,
-		Gid:      0,
-		Size:     info.Size(),
-		ModTime:  archiveTime,
-		Typeflag: tar.TypeReg,
-		Format:   tar.FormatUSTAR,
-	}
-	if err := tw.WriteHeader(header); err != nil {
-		return fmt.Errorf("write tar header: %w", err)
-	}
-	if _, err := io.Copy(tw, src); err != nil {
-		return fmt.Errorf("write tar data: %w", err)
+	for _, entry := range entries {
+		header := &tar.Header{
+			Name:     entry.name,
+			Mode:     entry.mode,
+			Uid:      0,
+			Gid:      0,
+			Size:     entry.info.Size(),
+			ModTime:  archiveTime,
+			Typeflag: tar.TypeReg,
+			Format:   tar.FormatUSTAR,
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			return fmt.Errorf("write tar header: %w", err)
+		}
+		if _, err := io.Copy(tw, entry.file); err != nil {
+			return fmt.Errorf("write tar data: %w", err)
+		}
 	}
 	if err := tw.Close(); err != nil {
 		return fmt.Errorf("close tar writer: %w", err)
@@ -135,18 +169,19 @@ func createTarGzip(dst io.Writer, src *os.File, info os.FileInfo, name string) e
 	return nil
 }
 
-func createZip(dst io.Writer, src *os.File, _ os.FileInfo, name string) error {
+func createZip(dst io.Writer, entries []archiveEntry) error {
 	zw := zip.NewWriter(dst)
-	header := &zip.FileHeader{Name: name, Method: zip.Deflate}
-	header.SetMode(0o755)
-	header.SetModTime(archiveTime)
-
-	entry, err := zw.CreateHeader(header)
-	if err != nil {
-		return fmt.Errorf("write zip header: %w", err)
-	}
-	if _, err := io.Copy(entry, src); err != nil {
-		return fmt.Errorf("write zip data: %w", err)
+	for _, entry := range entries {
+		header := &zip.FileHeader{Name: entry.name, Method: zip.Deflate}
+		header.SetMode(os.FileMode(entry.mode))
+		header.SetModTime(archiveTime)
+		file, err := zw.CreateHeader(header)
+		if err != nil {
+			return fmt.Errorf("write zip header: %w", err)
+		}
+		if _, err := io.Copy(file, entry.file); err != nil {
+			return fmt.Errorf("write zip data: %w", err)
+		}
 	}
 	if err := zw.Close(); err != nil {
 		return fmt.Errorf("close zip writer: %w", err)

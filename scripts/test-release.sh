@@ -452,6 +452,7 @@ if [ -n "$HOST_ARCHIVE" ]; then
 	mkdir -p "$EXTRACT_DIR"
 	tar -xzf "$DIST_DIR/$HOST_ARCHIVE" -C "$EXTRACT_DIR"
 	[ "$("$EXTRACT_DIR/gitctx" version)" = "gitctx 9.8.7-test" ] || die "release binary has the wrong version"
+	cmp "$ROOT_DIR/LICENSE" "$EXTRACT_DIR/LICENSE" >/dev/null || die "release archive is missing the project license"
 fi
 
 printf 'Release workflow integration test passed.\n'

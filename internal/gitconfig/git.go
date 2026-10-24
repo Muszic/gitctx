@@ -349,6 +349,9 @@ func (c *Client) apply(path, profileName string, selected profile.Profile, lockT
 	if err := selected.Validate(); err != nil {
 		return fmt.Errorf("profile %q: %w", profileName, err)
 	}
+	if selected.ManagedKeyID != "" && !selected.GitHubConnected {
+		return fmt.Errorf("profile %q has incomplete native registration; finish 'gitctx login %s' before applying it", profileName, profileName)
+	}
 	root, err := c.RepoRoot(path)
 	if err != nil {
 		return err

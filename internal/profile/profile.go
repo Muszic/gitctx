@@ -16,14 +16,17 @@ var validSSHFingerprint = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)
 // Profile describes commit identity and optional repository-scoped SSH/signing
 // configuration. Its fields are intended for non-secret metadata only.
 type Profile struct {
-	GitName        string `json:"git_name"`
-	GitEmail       string `json:"git_email"`
-	GitHubUser     string `json:"github_user,omitempty"`
-	SSHKey         string `json:"ssh_key,omitempty"`
-	SSHFingerprint string `json:"ssh_fingerprint,omitempty"`
-	SigningKey     string `json:"signing_key,omitempty"`
-	SigningFormat  string `json:"signing_format,omitempty"`
-	DisableSigning bool   `json:"disable_signing,omitempty"`
+	GitName         string `json:"git_name"`
+	GitEmail        string `json:"git_email"`
+	GitHubUser      string `json:"github_user,omitempty"`
+	SSHKey          string `json:"ssh_key,omitempty"`
+	SSHFingerprint  string `json:"ssh_fingerprint,omitempty"`
+	SigningKey      string `json:"signing_key,omitempty"`
+	SigningFormat   string `json:"signing_format,omitempty"`
+	DisableSigning  bool   `json:"disable_signing,omitempty"`
+	ManagedKeyID    string `json:"managed_key_id,omitempty"`
+	GitHubAccountID int64  `json:"github_account_id,omitempty"`
+	GitHubConnected bool   `json:"github_connected,omitempty"`
 }
 
 // ValidateName checks a profile identifier used on the command line.
@@ -87,6 +90,14 @@ func (p Profile) Validate() error {
 	}
 	if p.DisableSigning && (p.SigningKey != "" || p.SigningFormat != "") {
 		return fmt.Errorf("disabled signing cannot be combined with a signing key or format")
+	}
+	if p.ManagedKeyID != "" {
+		if len(p.ManagedKeyID) != 32 || strings.Trim(p.ManagedKeyID, "0123456789abcdef") != "" || p.SSHKey == "" || p.SSHFingerprint == "" || p.GitHubUser == "" || p.GitHubAccountID <= 0 {
+			return fmt.Errorf("managed keys require a valid vault identifier, pinned SSH key and GitHub account")
+		}
+	}
+	if p.GitHubConnected && p.ManagedKeyID == "" {
+		return fmt.Errorf("native connection state requires a managed key")
 	}
 
 	return nil

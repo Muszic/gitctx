@@ -368,6 +368,17 @@ func (a application) setup(args []string) int {
 		selected.SigningKey = pair.PublicPath
 		selected.SigningFormat = "ssh"
 	}
+	if beforeProfile.ManagedKeyID != "" && selected.SSHKey == beforeProfile.SSHKey && selected.SSHFingerprint == beforeProfile.SSHFingerprint {
+		if selected.GitHubUser != beforeProfile.GitHubUser {
+			return a.fail(exitUsage, "managed_account_conflict", errors.New("this encrypted key belongs to the saved native-login account"), "Keep its GitHub username, or use a different key and profile for another account.")
+		}
+		selected.ManagedKeyID = beforeProfile.ManagedKeyID
+		selected.GitHubAccountID = beforeProfile.GitHubAccountID
+		selected.GitHubConnected = beforeProfile.GitHubConnected
+		if err := a.keyManager().Unlock(selected); err != nil {
+			return a.fail(exitUnsafe, "key_unlock_failed", err, "No profile or repository setting was changed.")
+		}
+	}
 	if err := selected.Validate(); err != nil {
 		hint := ""
 		if generated {

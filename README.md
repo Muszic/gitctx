@@ -2,16 +2,53 @@
 
 `gitctx` keeps a repository's Git commit identity and authentication context aligned. It is designed for machines where work is the global default but personal or client repositories need their own identity.
 
-The current MVP stores profile metadata, applies profiles to repository-local Git config, supports repository-specific SSH and signing settings, and explains what it can and cannot verify. It never asks you to paste GitHub tokens or passwords; optional key registration uses an existing GitHub CLI credential in memory. Profile fields contain only non-secret metadata.
+The current MVP stores profile metadata, applies profiles to repository-local Git config, supports repository-specific SSH and signing settings, and explains what it can and cannot verify. It never asks you to paste GitHub tokens or passwords. Native login authorizes directly with GitHub; the advanced `connect` flow can also use an existing GitHub CLI credential. GitHub tokens are used in memory only. Profile fields contain only non-secret metadata.
 
 ## Install
+
+### Download a ready-to-run executable
+
+Download and extract the archive for your computer from
+[gitctx v0.2.0 Releases](https://github.com/Muszic/gitctx/releases/tag/v0.2.0).
+These downloads include the public GitHub application configuration. Go and
+GitHub CLI are **not** required; Git/OpenSSH are still required.
+
+| Computer | Archive suffix |
+|---|---|
+| macOS, Apple Silicon | `darwin-arm64.tar.gz` |
+| macOS, Intel | `darwin-amd64.tar.gz` |
+| Linux, x86-64 | `linux-amd64.tar.gz` |
+| Linux, ARM64 | `linux-arm64.tar.gz` |
+| Windows, x86-64 (experimental; advanced setup only) | `windows-amd64.zip` |
+
+Compare the archive's SHA-256 with the accompanying checksums file before
+running it. On macOS, use `shasum -a 256 <archive>`; on Linux use
+`sha256sum <archive>`. Each archive contains the executable and MIT `LICENSE`.
+Checksums detect corruption, not publisher identity. macOS binaries are not
+Developer-ID-signed or notarized; do not disable system-wide security protections.
+
+From the extracted directory on macOS/Linux:
+
+```sh
+./gitctx version
+./gitctx login personal
+```
+
+Then select the saved account in a repository with `gitctx use personal` and
+check read access with `gitctx verify`. Use the executable's full path until
+you place it in a directory on your `PATH`; inspect any existing installation
+before replacing it. Keep the included license with redistributed copies.
+macOS uses Keychain. Linux native login requires `secret-tool`, a desktop Secret
+Service, and a running SSH agent. Windows native login is not supported.
+
+### Install from source
 
 Building or installing from source requires Go 1.22 or newer. The user-local
 installer defaults to `~/.local/bin`, does not
 use `sudo`, and never edits shell, Git, SSH, profile, or Git-hosting settings:
 
 ```sh
-./scripts/install.sh
+GITCTX_GITHUB_CLIENT_ID=Ov23liCYmuKXz4v3LaVD ./scripts/install.sh
 hash -r
 command -v gitctx
 gitctx version
@@ -38,24 +75,143 @@ for manual review. After reviewing a checksum-mismatched binary, `--force` can
 remove it only when the adjacent marker is otherwise valid and the target is a
 regular file; it never bypasses missing, malformed, or unsafe markers or targets.
 
-The equivalent default-location Make targets are `make install` and
+The equivalent default-location Make targets are `make install` (supply
+`GITCTX_GITHUB_CLIENT_ID` for native login) and
 `make uninstall`. Call the scripts directly with `--bin-dir /absolute/path`
 when using a custom location.
 
 ## Build from source
 
 ```sh
-make build
+make build GITCTX_GITHUB_CLIENT_ID=Ov23liCYmuKXz4v3LaVD
 ./bin/gitctx version
 ```
 
-For a simple development build in the project root:
+For a simple development build in the project root (native login then needs
+`GITCTX_GITHUB_CLIENT_ID` at runtime):
 
 ```sh
 go build -o ./gitctx ./cmd/gitctx
 ```
 
-## Quick start
+## Native account login (v0.2.0)
+
+The v0.2.0 release downloads include gitctx's public GitHub OAuth Client ID;
+end users do not need to register an application or configure an ID. The older
+v0.1.0 executable does not include this flow. Source builds must supply the ID
+as shown above. Distributors of a separately branded fork should register
+their own application as described below. A build without an ID refuses login
+before opening a browser or generating/uploading keys.
+
+After installing an app-configured build, add an account from **any directory**:
+
+```sh
+gitctx login personal
+```
+
+Enter the intended GitHub username and commit email, or press Enter to detect
+the account in the browser and use its private GitHub noreply address. gitctx
+opens GitHub's device-authorization page and displays a short code. Check the
+account and code, then approve gitctx. GitHub may request sign-in or 2FA.
+gitctx verifies the authenticated account before generating/uploading a key;
+an expected-username mismatch stops the flow. Native profiles also pin the
+numeric GitHub account ID so a reused username cannot silently redirect a retry.
+
+There is no `gh` dependency and no manual public-key copy. gitctx generates a
+separate **encrypted** SSH key, puts a random passphrase in macOS Keychain or
+Linux Secret Service, and registers the public half for authentication and
+signing. The private file is owner-only; its passphrase is never placed in
+process arguments, environment variables, profile JSON, or a plaintext helper.
+Vault writes use subprocess stdin. Private temporary askpass helpers contain
+only paths to a bounded, owner-only local IPC relay and are removed after use;
+they never contain a passphrase or reread the vault. The OS may ask permission
+to store/unlock the item. Keys are kept under `keys/` beside the profile store.
+
+On macOS, a dialog may say **security** wants access to **gitctx.ssh-passphrase**.
+Enter your **login keychain password** (usually your Mac sign-in password), not
+your SSH key passphrase or GitHub password, and click **Allow**. Enter it only
+in the macOS dialog, never into gitctx or a chat. gitctx verifies and reuses one
+approved vault read while generating/loading a new key, or when unlocking an
+existing key. A matching key already loaded in the SSH agent requires no vault
+read, including on repeated profile switches. macOS may still prompt to unlock
+the Keychain or permit item storage, according to its security policy. Each
+key operation allows up to five minutes for vault approval; Ctrl-C cancels it.
+Timeout and access failures are reported separately, without displaying vault contents.
+Do not reset your keychain or change access rules for unrelated work items.
+
+Native login requires Git/OpenSSH and an existing SSH session agent. macOS uses
+Keychain; Linux desktop sessions require `secret-tool` and a running Secret
+Service. When a key needs unlocking, missing or locked secure storage fails
+closed: there is **no plaintext fallback**. An already-loaded matching key can
+be reused without a vault lookup. gitctx never starts/replaces the work agent
+or removes its keys. It adds only the validated account key to that existing
+agent. Headless systems
+without a secure vault/agent, and Windows native login, remain unsupported;
+the advanced setup below remains available there.
+
+Choose the saved account inside each repository:
+
+```sh
+gitctx use personal
+gitctx verify
+```
+
+`use` reuses the exact native key if it is already loaded in the session agent.
+Otherwise it unlocks it with one approved vault read, including after an agent
+restart, before changing repository settings. No passphrase is cached between
+commands; only the SSH agent keeps the unlocked key. Normal Git commands then
+use the selected context. No new browser authorization is needed for each
+repository.
+SSH remotes and trusted host keys are still required; `verify` proves read
+access, not push permission or organization SSO authorization. Do not expect a
+browser login to grant permissions the account does not already have.
+
+Login itself never changes repositories, global Git identity/signing, SSH
+configuration, or `gh` accounts. Plain `gitctx login personal` on a completed
+native profile only unlocks it. To repair revoked/incomplete registrations:
+
+```sh
+gitctx login personal --reauthorize
+```
+
+An incomplete first registration is saved as pending, including its encrypted
+key; retry the original login command to reuse that same key and any successful
+uploads. Remote keys are never deleted on failure. A pending profile cannot be
+applied until login finishes. Existing manually managed profiles are never
+rotated or overwritten by login: keep using `connect` for those, or choose a
+different native profile name. JSON and piped input cannot authorize/upload.
+`--no-browser` displays the code and URL without launching a browser.
+
+### Native login app registration (one time, by the distributor)
+
+1. [Register a GitHub OAuth application](https://github.com/settings/applications/new)
+   owned by the intended maintainer. Set the application name to `gitctx`, the
+   homepage to this repository, and the authorization callback URL to
+   `http://127.0.0.1/` (device flow does not use a callback).
+2. In the application's settings, **enable Device Flow**.
+3. Copy its **public Client ID**. Do not generate/share/embed a client secret;
+   GitHub's device flow does not need one. Do not reuse another app's Client ID.
+4. For local development, supply the ID at runtime or embed it in a build:
+
+   ```sh
+   GITCTX_GITHUB_CLIENT_ID=YOUR_PUBLIC_CLIENT_ID ./bin/gitctx login personal
+   make build GITCTX_GITHUB_CLIENT_ID=YOUR_PUBLIC_CLIENT_ID
+   ```
+
+5. For future releases, set the repository's **Actions variable**
+   `GITCTX_GITHUB_CLIENT_ID` to that public ID. The release build embeds it in all
+   binaries, so end users do not need to configure an ID or install `gh`.
+   Source installers and the local release script respect the same variable.
+
+The requested OAuth scopes are only `write:public_key` and
+`write:ssh_signing_key`, not repository-content permissions. The temporary OAuth
+token is discarded after registration, not stored in the OS vault. Declines,
+timeouts, insufficient grants, redirects, and account mismatches stop safely.
+Revoking the app's authorization in GitHub can also remove keys it created;
+reauthorize to reconcile registration. See GitHub's [device flow documentation](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow)
+and [SSH signing-key API](https://docs.github.com/en/rest/users/ssh-signing-keys).
+
+## Advanced repository setup
 
 From inside the repository you want to configure, start the guided setup:
 
@@ -203,6 +359,7 @@ Git evaluates `includeIf gitdir` against repository metadata, not the visible wo
 
 ```text
 gitctx setup <profile> [options]
+gitctx login [profile] [--github <username>] [--email <email>]
 gitctx connect <profile> [--config <path>]
 gitctx add <profile> [options]
 gitctx list [--json]
@@ -220,7 +377,7 @@ gitctx auto sync [--json]
 `status` is an alias for `current`, and running `gitctx` without arguments shows the current repository context. Within a command, options can appear before or after positional arguments; options are placed after the command name. Every command that reads or writes profiles accepts `--config <path>`; `GITCTX_CONFIG` provides the same override through the environment. Help and version output are plain text rather than JSON.
 
 Core repository/profile commands support JSON output for a future editor
-integration. The interactive `connect` upload flow is excluded:
+integration. The interactive `login` and `connect` upload flows are excluded:
 
 ```sh
 gitctx current --json
@@ -239,6 +396,7 @@ Profiles contain only:
 - optional GitHub username metadata
 - optional SSH private-key path and public-key fingerprint
 - optional signing-key identifier with its required format, or an explicit guarded-signing policy
+- for native login, a non-secret vault-record identifier, pinned GitHub account ID, and registration-completion state
 
 The profile store contains key paths and fingerprints, not private- or public-key contents.
 
@@ -246,7 +404,11 @@ The config file lives in the operating system's user config directory under `git
 
 ## Scope and safety
 
-Version 0.1 supports repository isolation through local Git configuration and SSH. Its supported targets are macOS and Linux, and it requires Git 2.30 or newer plus `ssh-keygen` when SSH profiles are used. Windows builds are experimental because Windows ACL protection and atomic file-replacement behavior are not yet verified. For strict key isolation, an applied SSH profile ignores user and system SSH config; use a fully qualified host in the Git remote rather than an SSH `Host` alias, and note that custom proxy and port settings are not inherited. Unix file modes are checked for private-key exposure. Literal `${` is rejected in SSH-key paths because OpenSSH may treat it as environment-variable syntax. It does not perform browser login, persist login credentials, rewrite remotes, or switch the machine-wide active `gh` account. Offline checks validate a resolvable named default push remote; `verify` is the explicit live connectivity check. Direct URL selectors are reported as unverifiable, and an explicitly supplied destination such as `git push other-remote` is outside that check. The optional `auto` feature changes global Git config only through its generated include and short-lived staging section; unrelated includes and global identity values are preserved.
+Version 0.2 supports repository isolation through local Git configuration and SSH on macOS and Linux. It requires Git 2.30 or newer plus OpenSSH for SSH profiles. Windows builds remain experimental because Windows ACL protection and atomic file-replacement behavior are not yet verified; native browser/vault login is not supported there.
+
+For strict key isolation, an applied SSH profile ignores user and system SSH config; use a fully qualified host in the Git remote rather than an SSH `Host` alias. Custom proxy and port settings are not inherited. Unix file modes are checked for private-key exposure. Literal `${` is rejected in SSH-key paths because OpenSSH may treat it as environment-variable syntax.
+
+Native login adds browser authorization and OS-vault-managed keys as described above. Neither native login nor advanced setup persists GitHub login tokens, rewrites remotes, or switches the machine-wide active `gh` account. Offline checks validate a resolvable named default push remote; `verify` is the explicit live connectivity check. Direct URL selectors are reported as unverifiable, and an explicitly supplied destination such as `git push other-remote` is outside that check. The optional `auto` feature changes global Git config only through its generated include and short-lived staging section; unrelated includes and global identity values are preserved.
 
 gitctx trusts the `git`, `ssh`, and initial `ssh-keygen` executables resolved from the environment in which it runs, just as Git and OpenSSH normally do. Run setup and profile application from a trusted shell with a trusted `PATH`. The signing-program integrity marker detects replacement after gitctx selects the executable; it cannot prove that an executable was benign before that initial selection.
 
@@ -256,9 +418,9 @@ Only one profile store's automatic rules may be active at a time. Disable the fi
 
 The MVP uses small lock files while changing its profile store or repository settings. If a process is force-quit or interrupted during a mutation, a later command may time out and print the exact leftover lock path. After confirming that no `gitctx` process is running, remove only that reported lock file and retry.
 
-Native browser login, automatic registration without GitHub CLI, remote
-rewriting, hooks, and the VS Code extension are later milestones. The versioned
-JSON output is the intended integration surface for that extension.
+Remote rewriting, hooks, headless/Windows secure-vault onboarding, and the VS
+Code extension remain later milestones. The versioned JSON output is the
+intended integration surface for that extension; native login stays interactive.
 
 ## Automated checks
 
@@ -279,7 +441,7 @@ Create version-injected local archives for macOS and Linux on `amd64` and
 `arm64`, plus the experimental Windows `amd64` build:
 
 ```sh
-make release VERSION=0.1.0
+make release VERSION=0.2.0 GITCTX_GITHUB_CLIENT_ID=Ov23liCYmuKXz4v3LaVD
 ```
 
 The command writes normalized `.tar.gz` and `.zip` archives plus a SHA-256
@@ -295,7 +457,7 @@ Run the end-to-end installer and release test with:
 ./scripts/test-release.sh
 ```
 
-## Publish a private release
+## Publish a release
 
 The release workflow runs only when an intentional tag in canonical
 `vMAJOR.MINOR.PATCH` form is pushed. The tagged commit must already be contained
@@ -311,8 +473,8 @@ For example, after CI has passed on `main`:
 ```sh
 git switch main
 git pull --ff-only
-git tag -s v0.1.0 -m "gitctx v0.1.0"
-git push origin v0.1.0
+git tag -s v0.2.0 -m "gitctx v0.2.0"
+git push origin v0.2.0
 ```
 
 The tag command above creates a signed tag using the signing identity selected
@@ -324,8 +486,15 @@ the draft and again before publication. Before the first release, protect `v*`
 tags from force updates or deletion and enable immutable releases in the GitHub
 repository settings to enforce that boundary on the server too.
 
-This repository does not yet contain a software license. Choose and add one
-before distributing public release archives.
+Releases follow the repository's visibility: this public repository publishes
+public download assets. The workflow does not change repository visibility.
+It requires the `GITCTX_GITHUB_CLIENT_ID` Actions variable so downloads cannot
+silently ship with browser login disabled.
+
+## License
+
+gitctx is distributed under the [MIT license](LICENSE), included in every
+release archive. See [CHANGELOG.md](CHANGELOG.md) for version details.
 
 ## Development
 

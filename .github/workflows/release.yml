@@ -68,6 +68,17 @@ jobs:
       - name: Run tests
         run: go test -mod=readonly ./...
 
+      - name: Require native login application configuration
+        shell: bash
+        env:
+          GITCTX_GITHUB_CLIENT_ID: ${{ vars.GITCTX_GITHUB_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITCTX_GITHUB_CLIENT_ID" =~ ^[A-Za-z0-9._-]{8,128}$ ]]; then
+            echo "Set the repository Actions variable GITCTX_GITHUB_CLIENT_ID to gitctx's public OAuth Client ID before releasing." >&2
+            exit 1
+          fi
+
       - name: Run race detector
         run: go test -mod=readonly -race ./...
 
@@ -102,6 +113,7 @@ jobs:
       - name: Build deterministic archives
         env:
           VERSION: ${{ needs.verify.outputs.version }}
+          GITCTX_GITHUB_CLIENT_ID: ${{ vars.GITCTX_GITHUB_CLIENT_ID }}
         run: ./scripts/release.sh --version "$VERSION" --output-dir dist
 
       - name: Verify release assets
@@ -156,7 +168,7 @@ jobs:
           include-hidden-files: false
 
   publish:
-    name: Publish private GitHub release
+    name: Publish GitHub release
     needs:
       - verify
       - build

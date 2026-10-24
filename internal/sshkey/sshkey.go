@@ -3,11 +3,13 @@ package sshkey
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"time"
@@ -24,6 +26,10 @@ type Pair struct {
 	PublicPath  string `json:"public_path"`
 	Fingerprint string `json:"fingerprint"`
 }
+
+// ManagedKeyPromptTimeout leaves time for a person to answer an OS password
+// vault prompt. It bounds local key operations, not network requests.
+const ManagedKeyPromptTimeout = 5 * time.Minute
 
 // DefaultPath returns the default private-key path for a profile.
 func DefaultPath(profileName string) (string, error) {
@@ -108,14 +114,33 @@ type executor interface {
 	Output(args []string) ([]byte, error)
 }
 
-type systemExecutor struct{}
+type systemExecutor struct{ env []string }
 
-func (systemExecutor) Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+func (runner systemExecutor) Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	command := exec.Command("ssh-keygen", args...)
+	if runner.env != nil {
+		parent, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		ctx, cancel := context.WithTimeout(parent, ManagedKeyPromptTimeout)
+		defer cancel()
+		command = exec.CommandContext(ctx, "ssh-keygen", args...)
+		command.WaitDelay = time.Second
+	}
+	command.Env = runner.env
 	command.Stdin = stdin
 	command.Stdout = stdout
 	command.Stderr = stderr
 	return command.Run()
+}
+
+// GenerateWithAskpass creates an encrypted key using a private, non-secret
+// askpass helper that receives an approved, in-memory random passphrase. The
+// passphrase never appears in process arguments or the profile store.
+func GenerateWithAskpass(profileName, destination, helper string, env []string) (Pair, error) {
+	if helper == "" || !filepath.IsAbs(helper) {
+		return Pair{}, errors.New("an absolute managed askpass helper is required")
+	}
+	return generate(profileName, destination, nil, io.Discard, io.Discard, systemExecutor{env: env})
 }
 
 func (systemExecutor) Output(args []string) ([]byte, error) {

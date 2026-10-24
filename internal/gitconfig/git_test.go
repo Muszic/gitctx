@@ -20,6 +20,19 @@ import (
 	"gitctx/internal/profile"
 )
 
+func TestPendingNativeProfileIsRejectedBeforeRepositoryMutation(t *testing.T) {
+	directory := t.TempDir()
+	p := profile.Profile{GitName: "Ada", GitEmail: "ada@example.invalid", GitHubUser: "ada", GitHubAccountID: 42, SSHKey: "/keys/pending", SSHFingerprint: "SHA256:" + strings.Repeat("a", 43), ManagedKeyID: strings.Repeat("b", 32)}
+	err := NewClient().Apply(directory, "pending", p)
+	if err == nil || !strings.Contains(err.Error(), "incomplete native registration") {
+		t.Fatalf("pending profile error=%v", err)
+	}
+	files, readErr := os.ReadDir(directory)
+	if readErr != nil || len(files) != 0 {
+		t.Fatal("pending profile mutated the target directory")
+	}
+}
+
 func TestApplyIsRepositoryLocal(t *testing.T) {
 	repo := initRepository(t)
 	key := filepath.Join(t.TempDir(), "personal key")

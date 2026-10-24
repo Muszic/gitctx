@@ -3,7 +3,7 @@
 set -eu
 
 PROGRAM=gitctx
-DEFAULT_VERSION=0.1.0
+DEFAULT_VERSION=0.2.0
 
 usage() {
 	cat <<'EOF'
@@ -12,7 +12,7 @@ Usage: ./scripts/release.sh [options]
 Build local release archives and SHA-256 checksums. Nothing is uploaded.
 
 Options:
-  --version <value>     Version embedded in each binary (default: 0.1.0)
+  --version <value>     Version embedded in each binary (default: 0.2.0)
   --output-dir <path>   Artifact directory (default: ./dist)
   --help                Show this help
 
@@ -89,7 +89,11 @@ while [ "$#" -gt 0 ]; do
 done
 
 valid_version "$VERSION" || die "version must start with a number, contain only letters, numbers, '.', '_', '+', and '-', and must not contain '..'"
+CLIENT_ID=${GITCTX_GITHUB_CLIENT_ID:-}
+case "$CLIENT_ID" in *[!A-Za-z0-9._-]*) die "invalid public GitHub Client ID" ;; esac
+if [ -n "$CLIENT_ID" ]; then [ "${#CLIENT_ID}" -ge 8 ] && [ "${#CLIENT_ID}" -le 128 ] || die "invalid public GitHub Client ID"; fi
 command -v go >/dev/null 2>&1 || die "Go is required to build releases"
+[ -f "$ROOT_DIR/LICENSE" ] && [ ! -L "$ROOT_DIR/LICENSE" ] || die "a regular LICENSE file is required in release archives"
 
 mkdir -p "$OUTPUT_DIR" || die "cannot create output directory: $OUTPUT_DIR"
 CDPATH= cd "$OUTPUT_DIR" || die "cannot enter output directory: $OUTPUT_DIR"
@@ -202,7 +206,7 @@ build_target() {
 
 	STAGE=$WORK_DIR/$TARGET_OS-$TARGET_ARCH
 	mkdir -p "$STAGE"
-	LDFLAGS="-s -w -X main.version=$VERSION"
+	LDFLAGS="-s -w -X main.version=$VERSION -X gitctx/internal/githubkeys.OAuthClientID=$CLIENT_ID"
 	(
 		cd "$ROOT_DIR"
 		clean_go_env TMPDIR="$WORK_DIR" GOTMPDIR="$WORK_DIR" CGO_ENABLED=0 GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH" GOAMD64=v1 GOARM64=v8.0 GOFIPS140=off GO111MODULE=on GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GOCACHE="$WORK_DIR/go-cache" \
@@ -212,6 +216,7 @@ build_target() {
 	"$WORK_DIR/package-release" \
 		--source "$STAGE/$BINARY_NAME" \
 		--name "$BINARY_NAME" \
+		--license "$ROOT_DIR/LICENSE" \
 		--output "$WORK_DIR/artifacts/$ARCHIVE" \
 		--format "$FORMAT" || die "archive failed for $TARGET_OS/$TARGET_ARCH"
 }

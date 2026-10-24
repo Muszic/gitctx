@@ -127,7 +127,7 @@ func doesNotNeedConfig(args []string) bool {
 	switch args[0] {
 	case "help", "-h", "--help", "version", "-v", "--version":
 		return true
-	case "setup", "connect", "add", "list", "profiles", "use", "current", "status", "doctor", "verify", "fix", "auto":
+	case "login", "setup", "connect", "add", "list", "profiles", "use", "current", "status", "doctor", "verify", "fix", "auto":
 		// These commands may need the profile store unless effective help is true.
 	default:
 		// Unknown commands can report usage without resolving user configuration.
@@ -172,6 +172,10 @@ type application struct {
 	json              bool
 	command           string
 	openRegistration  func(context.Context) (registrationSession, error)
+	authorizeLogin    func(context.Context, string, func(string, string)) (loginSession, error)
+	openLoginBrowser  func(string) error
+	loginKeys         loginKeyManager
+	loginTerminal     func() bool
 }
 
 type envelope struct {
@@ -220,6 +224,8 @@ func (a application) run(args []string) int {
 		return a.setup(args[1:])
 	case "connect":
 		return a.connect(args[1:])
+	case "login":
+		return a.login(args[1:])
 	case "list", "profiles":
 		a.command = "list"
 		return a.list(args[1:])
@@ -411,7 +417,9 @@ func (a application) list(args []string) int {
 		}{profiles, a.store.Path}, nil)
 	}
 	if len(profiles) == 0 {
-		fmt.Fprintln(a.out, "No profiles yet. Start the guided setup inside a repository:")
+		fmt.Fprintln(a.out, "No profiles yet. Add an account once with browser login:")
+		fmt.Fprintln(a.out, "  gitctx login personal")
+		fmt.Fprintln(a.out, "Or use advanced setup inside a repository:")
 		fmt.Fprintln(a.out, "  gitctx setup personal")
 		return exitOK
 	}
@@ -445,6 +453,21 @@ func (a application) use(args []string) int {
 	if options.profile == "" {
 		return a.fail(exitUsage, "invalid_usage", fmt.Errorf("use requires a profile name"), "Usage: gitctx use <profile> [--repo <path>]")
 	}
+	// Unlock a native key before taking the shared store lock. Vault permission
+	// prompts must not hold a mutation lock or switch another agent/account.
+	before, loadErr := a.store.Load()
+	if loadErr != nil {
+		return a.fail(exitConfig, "config_invalid", loadErr, "")
+	}
+	beforeProfile := before.Profiles[options.profile]
+	if beforeProfile.ManagedKeyID != "" {
+		if !beforeProfile.GitHubConnected {
+			return a.fail(exitUnsafe, "login_incomplete", errors.New("this account's key registration is incomplete"), "Run 'gitctx login "+options.profile+"' again; the same key will be reused.")
+		}
+		if err := a.keyManager().Unlock(beforeProfile); err != nil {
+			return a.fail(exitUnsafe, "key_unlock_failed", err, "No repository settings were changed.")
+		}
+	}
 
 	var config configstore.Config
 	var selected profile.Profile
@@ -462,6 +485,9 @@ func (a application) use(args []string) int {
 		if !exists {
 			profileMissing = true
 			return nil
+		}
+		if selected.ManagedKeyID != "" && selected != beforeProfile {
+			return errors.New("the managed profile changed while its key was unlocking; retry use")
 		}
 		gitOperationErr = a.git.Apply(options.repo, options.profile, selected)
 		if gitOperationErr != nil {
@@ -1925,6 +1951,11 @@ func optionConsumesValue(command, name string) bool {
 		return true
 	}
 	switch command {
+	case "login":
+		switch name {
+		case "--client-id", "--github", "--email", "--name":
+			return true
+		}
 	case "setup":
 		switch name {
 		case "--name", "--email", "--github", "--repo", "--auth", "--ssh-key", "--key-path", "--signing":
@@ -2100,6 +2131,7 @@ Usage:
   gitctx <command> [options]
 
 Commands:
+  login [profile]    Add a reusable account with native GitHub browser login
   setup <profile>    Guided first-time setup for one repository
   connect <profile>  Register its public key with GitHub using GitHub CLI
   add <profile>      Create a profile with non-secret identity metadata
@@ -2115,7 +2147,7 @@ Commands:
 
 Core command options (place after the command):
   --config <path>  Use an explicit profile store
-  --json           Emit a stable machine-readable response (except connect)
+  --json           Emit a stable machine-readable response (except login/connect)
 
 Help and version output are always plain text. Run 'gitctx <command> --help' for command options.`)
 }

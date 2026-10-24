@@ -35,10 +35,20 @@ type Result struct {
 // Session pins one credential and verified account for the entire operation.
 // A concurrent change to gh's active account cannot redirect an upload.
 type Session struct {
-	token  string
-	login  string
-	client *http.Client
+	token   string
+	login   string
+	account Account
+	client  *http.Client
 }
+
+// Account is the identity returned by GitHub, not the username typed locally.
+type Account struct {
+	Login string `json:"login"`
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+}
+
+func (s *Session) Account() Account { return s.account }
 
 // Open uses gh's current github.com credential without logging in, switching
 // accounts, or requesting extra permissions. Credential output is never printed.
@@ -85,10 +95,7 @@ func newHTTPClient() *http.Client {
 
 func openSession(ctx context.Context, token string, client *http.Client) (*Session, error) {
 	session := &Session{token: token, client: client}
-	var account struct {
-		Login string `json:"login"`
-		ID    int64  `json:"id"`
-	}
+	var account Account
 	if err := session.request(ctx, "GET", "/user", nil, &account); err != nil {
 		return nil, err
 	}
@@ -99,6 +106,7 @@ func openSession(ctx context.Context, token string, client *http.Client) (*Sessi
 		return nil, errors.New("GitHub returned an invalid account identity")
 	}
 	session.login = account.Login
+	session.account = account
 	return session, nil
 }
 
@@ -261,7 +269,7 @@ func (s *Session) request(ctx context.Context, method, endpoint string, payload 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		switch response.StatusCode {
 		case 401:
-			return errors.New("GitHub rejected the login credential; review your gh login")
+			return errors.New("GitHub rejected the login credential; review your GitHub authorization")
 		case 403, 404:
 			return errors.New("GitHub denied access; the login may need write:public_key and write:ssh_signing_key permissions, or an account/organization policy may block registration")
 		case 422:

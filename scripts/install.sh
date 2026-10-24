@@ -3,7 +3,7 @@
 set -eu
 
 PROGRAM=gitctx
-DEFAULT_VERSION=0.1.0
+DEFAULT_VERSION=0.2.0
 MANIFEST_NAME=.gitctx-install-manifest
 MANIFEST_MAGIC=gitctx-managed-install-v1
 
@@ -17,7 +17,7 @@ SSH, or Git-hosting settings.
 
 Options:
   --bin-dir <path>   Installation directory (default: $HOME/.local/bin)
-  --version <value>  Version embedded in the binary (default: 0.1.0)
+  --version <value>  Version embedded in the binary (default: 0.2.0)
   --force            Replace an existing binary or installation marker
   --help             Show this help
 EOF
@@ -76,6 +76,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 valid_version "$VERSION" || die "version must start with a number, contain only letters, numbers, '.', '_', '+', and '-', and must not contain '..'"
+CLIENT_ID=${GITCTX_GITHUB_CLIENT_ID:-}
+case "$CLIENT_ID" in *[!A-Za-z0-9._-]*) die "invalid public GitHub Client ID" ;; esac
+if [ -n "$CLIENT_ID" ]; then [ "${#CLIENT_ID}" -ge 8 ] && [ "${#CLIENT_ID}" -le 128 ] || die "invalid public GitHub Client ID"; fi
 command -v go >/dev/null 2>&1 || die "Go is required to build gitctx"
 
 if [ "$BIN_DIR_SET" -eq 0 ]; then
@@ -180,7 +183,7 @@ fi
 WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gitctx-install.XXXXXX") || die "cannot create temporary build directory"
 WORK_DIR=$(CDPATH= cd "$WORK_DIR" && pwd -P) || die "cannot resolve temporary build directory"
 mkdir -p "$WORK_DIR/go-cache" || die "cannot create private Go build cache"
-LDFLAGS="-s -w -X main.version=$VERSION"
+LDFLAGS="-s -w -X main.version=$VERSION -X gitctx/internal/githubkeys.OAuthClientID=$CLIENT_ID"
 (
 	cd "$ROOT_DIR"
 	env TMPDIR="$WORK_DIR" GOTMPDIR="$WORK_DIR" CGO_ENABLED=0 GOOS= GOARCH= GOAMD64= GOARM64= GOEXPERIMENT= GOFIPS140=off GO111MODULE=on GOENV=off GOFLAGS= GOWORK=off GOTOOLCHAIN=local GOPROXY=off GOSUMDB=off GOCACHE="$WORK_DIR/go-cache" \

@@ -6,6 +6,33 @@ import (
 	"testing"
 )
 
+func TestNativeMetadataRequiresPinnedAccountAndVault(t *testing.T) {
+	p := Profile{GitName: "Ada", GitEmail: "ada@example.invalid", GitHubUser: "ada", GitHubAccountID: 42, SSHKey: "/keys/managed", SSHFingerprint: "SHA256:" + strings.Repeat("a", 43), ManagedKeyID: strings.Repeat("b", 32), GitHubConnected: true}
+	if err := p.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"missing account ID", "unsafe vault ID", "missing key pin", "missing vault ID"} {
+		bad := p
+		switch mode {
+		case "missing account ID":
+			bad.GitHubAccountID = 0
+		case "unsafe vault ID":
+			bad.ManagedKeyID = "../different-secret"
+		case "missing key pin":
+			bad.SSHFingerprint = ""
+		case "missing vault ID":
+			bad.ManagedKeyID = ""
+		}
+		if err := bad.Validate(); err == nil {
+			t.Fatalf("accepted %s", mode)
+		}
+	}
+	legacy := Profile{GitName: "Work", GitEmail: "work@example.invalid"}
+	if err := legacy.Validate(); err != nil {
+		t.Fatal("existing profiles must remain compatible")
+	}
+}
+
 func TestProfileValidation(t *testing.T) {
 	tests := []struct {
 		name    string
